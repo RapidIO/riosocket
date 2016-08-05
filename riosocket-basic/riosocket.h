@@ -23,12 +23,10 @@
 #define TSI721_DEVICE_ID                0x80AB
 
 #define MAX_NETS			8
-#define PHYS_MEM_SIZE			0x80000000
 #define DEFAULT_DOORBELL_BASE		0xe000
 #define NAPI_WEIGHT			8
 #define RIOSOCKET_HEADER		8
 #define DEFAULT_MSG_WATERMARK		256
-
 #define RIONET_MAILBOX			0
 
 #define RIONET_TX_RING_SIZE		512
@@ -50,6 +48,7 @@
 #define MAX_MTU                         65500
 #define NODE_SECTOR_SIZE       		0x10000
 #define NODE_MEMLEN                 	0x200000
+#define DEFAULT_IBW_SIZE		0x8000000 /* 128MB IBW = 64 nodes */
 
 #define BROADCAST			0xFFFFFFFF
 

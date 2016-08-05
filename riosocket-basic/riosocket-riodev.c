@@ -53,6 +53,10 @@ module_param(rio_phys_size, ulong , S_IRUGO);
 MODULE_PARM_DESC(rio_phys_size, "Physical memory size");
 EXPORT_SYMBOL(rio_phys_size);
 
+unsigned long rio_ibw_size = DEFAULT_IBW_SIZE;
+module_param(rio_ibw_size, ulong , S_IRUGO);
+MODULE_PARM_DESC(rio_ibw_size, "Inbound mapping window size for each mport");
+
 extern const struct attribute_group *riosocket_drv_attr_groups[];
 struct riosocket_driver_params stats;
 struct riosocket_network nets[MAX_NETS];
@@ -552,10 +556,19 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 	struct riosocket_node *node=NULL;
 	int ret=0;
 	unsigned char netid=rdev->net->id;
+	unsigned long net_phys_mem;
 
 	dev_dbg(&rdev->dev,"%s: Probe %d device\n",__FUNCTION__,rdev->destid);
 
 	if (netid >= MAX_NETS) {
+		return -EINVAL;
+	}
+
+	net_phys_mem = rio_phys_mem + (rio_ibw_size * netid);
+
+	if ((net_phys_mem + rio_ibw_size) > (rio_phys_mem + rio_phys_size)) {
+		dev_err(&rdev->net->hport->dev,
+			"Invalid memory configuration for net=%d\n", netid);
 		return -EINVAL;
 	}
 
@@ -589,9 +602,9 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 		/*We direct map the rio address to pcie memory.
 		 * FIXME: Get the max memory populated and dynamically configure the number of
 		 * inbound mappings needed in multiple of 16GB */
-		if ((ret=rio_map_inb_region(rio_get_mport(rdev), rio_phys_mem,
-				  rio_phys_mem, rio_phys_size , 0)) ) {
-				dev_err(&rdev->dev,"Error in mapping inbound window\n");
+		if ((ret=rio_map_inb_region(rio_get_mport(rdev), net_phys_mem,
+					    net_phys_mem, rio_ibw_size , 0)) ) {
+			dev_err(&rdev->dev,"Error in mapping inbound window\n");
 			goto freedma;
 		}
 
@@ -645,9 +658,11 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 		node->ringsize=NODE_MEMLEN/NODE_SECTOR_SIZE;
 
 		if ( rio_phys_mem && rio_phys_size ) {
-			node->buffer_address = rio_phys_mem + (node->devid*NODE_MEMLEN);
+			node->buffer_address = net_phys_mem +
+						(node->devid * NODE_MEMLEN);
 
-			if ( (node->buffer_address + NODE_MEMLEN) > (rio_phys_mem+rio_phys_size)) {
+			if ((node->buffer_address + NODE_MEMLEN) >
+			    (net_phys_mem + rio_ibw_size )) {
 				dev_err(&rdev->dev,"Device memory overflow\n");
 				goto freenode;
 			}
@@ -697,7 +712,7 @@ freedb:
 	rio_release_inb_dbell( nets[netid].mport, (rio_db|DB_START),
 			(rio_db|DB_END));
 freeinbmem:
-	rio_unmap_inb_region(rio_get_mport(rdev), (dma_addr_t)rio_phys_mem);
+	rio_unmap_inb_region(rio_get_mport(rdev), (dma_addr_t)net_phys_mem);
 freedma:
 	rio_release_dma(nets[netid].dmachan);
 freenode:
@@ -757,13 +772,10 @@ static int __init riosocket_net_init(void)
 {
 	pr_info("RIOSocket Driver Version %s Initialization...\n",RIOSOCKET_VERSION);
 
-	if( rio_phys_mem && rio_phys_size ) {
-		if((rio_phys_mem+rio_phys_size) > 0x80000000 ) {		
-			pr_info("Local memory + Size should be < 2GB\n");
-				return -EINVAL;
-		} else {
-			pr_info("Using %lx - %lx for local memory allocation\n",rio_phys_mem,(rio_phys_mem+rio_phys_size));
-		}
+	if(rio_phys_mem && rio_phys_size) {
+			pr_info("Using %lx - %lx for local memory allocation (0x%lx per net)\n",
+				rio_phys_mem,
+				(rio_phys_mem + rio_phys_size - 1), rio_ibw_size);
 	} else {
 		/*TODO:Need to add support for using dma routines to allocate remote memory*/
 		pr_info("Please specify rio_phys_mem:rio_phys_size\n");
@@ -790,6 +802,7 @@ static int __init riosocket_net_init(void)
 static void __exit riosocket_net_exit(void)
 {
 	unsigned char i;
+	unsigned long net_phys_mem;
 
 	pr_info("RIOSocket Driver Initialization Unloading\n");
 
@@ -800,19 +813,20 @@ static void __exit riosocket_net_exit(void)
 		if (nets[i].mport) {
 
 			if (nets[i].ndev)
-					riosocket_netdeinit(&nets[i]);
+				riosocket_netdeinit(&nets[i]);
 
 			spin_lock(&nets[i].lock);
 
 			rio_release_inb_dbell(nets[i].mport, (rio_db|DB_START),
-			(rio_db|DB_END));
+					      (rio_db | DB_END));
 
-			rio_unmap_inb_region(nets[i].mport, (dma_addr_t)rio_phys_mem);
+			net_phys_mem = rio_phys_mem +
+					rio_ibw_size * nets[i].mport->id;
+			rio_unmap_inb_region(nets[i].mport,
+						(dma_addr_t)net_phys_mem);
 
 			rio_release_dma(nets[i].dmachan);
-
-        		rio_release_inb_mbox(nets[i].mport, RIONET_MAILBOX);
-        		
+			rio_release_inb_mbox(nets[i].mport, RIONET_MAILBOX);
 			rio_release_outb_mbox(nets[i].mport, RIONET_MAILBOX);
 
 			spin_unlock(&nets[i].lock);
