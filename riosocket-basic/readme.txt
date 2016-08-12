@@ -78,12 +78,12 @@ RIOSocket-Basic Installation Instruction
      If there is no irqbalance daemon running the perf.sh utility will report an 
      error which can be safely ignored.
 
-8: After execution of step 7, a new network device named riosock0 will appear on 
-    executing ifconfig -a command. From this point onward, the riosock0 can be used
-    as any other Ethernet interface. Assign ip address to riosock0 and ping to others
+8: After execution of step 7, a new network device named rsock0 will appear on
+    executing ifconfig -a command. From this point onward, the rsock0 can be used
+    as any other Ethernet interface. Assign IP address to rsock0 and ping to others
     nodes:
 
-    ifconfig riosock0 10.12.10.1 up
+    ifconfig rsock0 10.12.10.1 up
     ping 10.12.10.2
 
 9: To measure throughput, download/install iperf utility from 
