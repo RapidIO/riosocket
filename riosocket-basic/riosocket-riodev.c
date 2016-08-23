@@ -144,7 +144,7 @@ static void riosocket_tx_cb( void *p )
 static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *skb )
 {
 	struct riocket_rxparam *param;
-	unsigned long long rioaddr;
+	u64 rioaddr;
 	struct rio_dma_data tx_data;
 	struct dma_async_tx_descriptor *tx = NULL;
 	enum dma_ctrl_flags	flags;
@@ -189,8 +189,8 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 
 	tx_data.sg = &param->sgl;
 	tx_data.sg_len = 1;
-	tx_data.rio_addr_u = (unsigned int)(rioaddr>>32);
-	tx_data.rio_addr = (unsigned int)rioaddr;
+	tx_data.rio_addr_u = 0;
+	tx_data.rio_addr = rioaddr;
 	tx_data.wr_type = RDW_ALL_NWRITE;
 
 	flags = DMA_CTRL_ACK | DMA_PREP_INTERRUPT;
