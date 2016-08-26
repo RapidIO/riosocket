@@ -645,8 +645,11 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 
 	/*Initialize the node*/
 	if (dev_is_rionet_capable(rdev)) {
-			if (!(node = kzalloc(sizeof(struct riosocket_node),GFP_KERNEL))) {
-				ret=-ENOMEM;
+
+		unsigned long flags;
+
+		if (!(node = kzalloc(sizeof(struct riosocket_node),GFP_KERNEL))) {
+			ret=-ENOMEM;
 			goto freenode;
 		}
 
@@ -693,9 +696,9 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 		
 		riosocket_node_napi_init(node);
 
-		spin_lock(&nets[netid].lock);
+		spin_lock_irqsave(&nets[netid].lock, flags);
 		list_add_tail(&node->nodelist, &nets[netid].actnodelist);
-		spin_unlock(&nets[netid].lock);
+		spin_unlock_irqrestore(&nets[netid].lock,flags);
 
 		dev_info(&rdev->dev,"Node %d successfully initialized",node->devid);
 	}
