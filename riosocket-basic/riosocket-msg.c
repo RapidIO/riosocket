@@ -30,6 +30,7 @@
 #include <linux/crc32.h>
 #include <linux/ethtool.h>
 #include <linux/reboot.h>
+#include <linux/version.h>
 
 #include <linux/rio.h>
 #include <linux/rio_drv.h>
@@ -229,12 +230,15 @@ int riosocket_start_xmit_msg(struct sk_buff *skb, struct net_device *ndev)
 	unsigned long flags;
 
 	dev_dbg(&ndev->dev,"%s: Start\n",__FUNCTION__);
-
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,7,0))
         local_irq_save(flags);
         if (!spin_trylock(&rnet->lock)) {
                 local_irq_restore(flags);
                 return NETDEV_TX_LOCKED;
         }
+#else
+	spin_lock_irqsave(&rnet->lock, flags);
+#endif
 
 	if ((rnet->tx_cnt+1)  > RIONET_TX_RING_SIZE) {
 		netif_stop_queue(ndev);
