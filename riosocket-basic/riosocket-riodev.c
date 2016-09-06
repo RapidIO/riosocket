@@ -589,8 +589,8 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 		/*We direct map the rio address to pcie memory.
 		 * FIXME: Get the max memory populated and dynamically configure the number of
 		 * inbound mappings needed in multiple of 16GB */
-		if ((ret=rio_map_inb_region(rio_get_mport(rdev), 0,
-				  0, PHYS_MEM_SIZE , 0)) ) {
+		if ((ret=rio_map_inb_region(rio_get_mport(rdev), rio_phys_mem,
+				  rio_phys_mem, rio_phys_size , 0)) ) {
 				dev_err(&rdev->dev,"Error in mapping inbound window\n");
 			goto freedma;
 		}
@@ -697,7 +697,7 @@ freedb:
 	rio_release_inb_dbell( nets[netid].mport, (rio_db|DB_START),
 			(rio_db|DB_END));
 freeinbmem:
-	rio_unmap_inb_region(rio_get_mport(rdev), (dma_addr_t)0);
+	rio_unmap_inb_region(rio_get_mport(rdev), (dma_addr_t)rio_phys_mem);
 freedma:
 	rio_release_dma(nets[netid].dmachan);
 freenode:
@@ -807,7 +807,7 @@ static void __exit riosocket_net_exit(void)
 			rio_release_inb_dbell(nets[i].mport, (rio_db|DB_START),
 			(rio_db|DB_END));
 
-			rio_unmap_inb_region(nets[i].mport, 0);
+			rio_unmap_inb_region(nets[i].mport, (dma_addr_t)rio_phys_mem);
 
 			rio_release_dma(nets[i].dmachan);
 
