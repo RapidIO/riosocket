@@ -49,6 +49,7 @@
 #define NODE_SECTOR_SIZE       		0x10000
 #define NODE_MEMLEN                 	0x200000
 #define DEFAULT_IBW_SIZE		0x8000000 /* 128MB IBW = 64 nodes */
+#define DEFAULT_RIO_BASE		0 /* must be within first 16GB of addr space */
 
 #define BROADCAST			0xFFFFFFFF
 
@@ -112,6 +113,7 @@ struct riosocket_network {
         struct rio_mport *mport;
         struct dma_chan *dmachan;
         unsigned int id;
+	dma_addr_t dma_base;
 };
 
 struct riocket_rxparam

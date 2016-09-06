@@ -53,6 +53,10 @@ module_param(rio_phys_size, ulong , S_IRUGO);
 MODULE_PARM_DESC(rio_phys_size, "Physical memory size");
 EXPORT_SYMBOL(rio_phys_size);
 
+unsigned long rio_base_addr = DEFAULT_RIO_BASE;
+module_param(rio_base_addr, ulong , S_IRUGO);
+MODULE_PARM_DESC(rio_base_addr, "Inbound RaridIO window base address");
+
 unsigned long rio_ibw_size = DEFAULT_IBW_SIZE;
 module_param(rio_ibw_size, ulong , S_IRUGO);
 MODULE_PARM_DESC(rio_ibw_size, "Inbound mapping window size for each mport");
@@ -302,8 +306,9 @@ int riosocket_packet_drain( struct riosocket_node *node, int budget )
 {
 	int packetrxed=0,i=0,length;
 	struct sk_buff *skb;
-	void *srcaddr,*dstaddr;
-	unsigned char *hdr;
+	void __iomem *srcaddr;
+	void *dstaddr;
+	unsigned char __iomem *hdr;
 
 
 	dev_dbg(&node->rdev->dev,"%s: Start (%d)\n",__FUNCTION__,node->rdev->destid);
@@ -417,14 +422,14 @@ void riosocket_send_hello_ack_msg( struct rio_dev *rdev )
 	node=riosocket_get_node(&nets[rdev->net->id].actnodelist,rdev);
 
 	msg = DB_HELLO_ACK_1;
-	msg |= (unsigned short)(( node->buffer_address >> 12) << CMD_SHIFT);
+	msg |= (u16)((((node->buffer_address - rio_phys_mem) + rio_base_addr) >> 12) << CMD_SHIFT);
 
 	rio_send_doorbell(rdev,rio_db|msg);
 
 	dev_dbg(&rdev->dev,"%s: Sent ack1 with %x\n",__FUNCTION__,msg);
 
 	msg = DB_HELLO_ACK_2;
-	msg |= (unsigned short)(( node->buffer_address >> 24 ) << CMD_SHIFT);
+	msg |= (u16)((((node->buffer_address - rio_phys_mem) + rio_base_addr) >> 24 ) << CMD_SHIFT);
 
 	rio_send_doorbell(rdev,rio_db|msg);
 
@@ -557,7 +562,7 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 	struct riosocket_node *node=NULL;
 	int ret=0;
 	unsigned char netid=rdev->net->id;
-	unsigned long net_phys_mem;
+	phys_addr_t net_phys_mem;
 
 	dev_dbg(&rdev->dev,"%s: Probe %d device\n",__FUNCTION__,rdev->destid);
 
@@ -567,15 +572,19 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 
 	net_phys_mem = rio_phys_mem + (rio_ibw_size * netid);
 
-	if ((net_phys_mem + rio_ibw_size) > (rio_phys_mem + rio_phys_size)) {
-		dev_err(&rdev->net->hport->dev,
-			"Invalid memory configuration for net=%d\n", netid);
-		return -EINVAL;
-	}
-
 	/*check if the network is already initialized. If not, carry out
 	 * per adapter network init*/
 	if (!(net_table & (0x1 << netid))) {
+
+		struct page *page;
+
+		if ((net_phys_mem + rio_ibw_size) >
+				(rio_phys_mem + rio_phys_size)) {
+			dev_err(&rdev->net->hport->dev,
+				"Invalid memory configuration for net=%d\n",
+				netid);
+			return -EINVAL;
+		}
 
 		dev_dbg(&rdev->dev,"%s:Initializing network %d",__FUNCTION__,netid);
 
@@ -603,9 +612,22 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 		/*We direct map the rio address to pcie memory.
 		 * FIXME: Get the max memory populated and dynamically configure the number of
 		 * inbound mappings needed in multiple of 16GB */
-		if ((ret=rio_map_inb_region(rio_get_mport(rdev), net_phys_mem,
-					    net_phys_mem, rio_ibw_size , 0)) ) {
-			dev_err(&rdev->dev,"Error in mapping inbound window\n");
+		page = pfn_to_page(PFN_DOWN(net_phys_mem));
+
+		nets[netid].dma_base = dma_map_page(nets[netid].mport->dev.parent, page,
+				      0, rio_ibw_size, DMA_BIDIRECTIONAL);
+		if (dma_mapping_error(nets[netid].mport->dev.parent, nets[netid].dma_base)) {
+			dev_err(nets[netid].mport->dev.parent, "Failed to map DMA page\n");
+			ret = -EIO;
+			goto freedma;
+		}
+
+		ret = rio_map_inb_region(rio_get_mport(rdev), nets[netid].dma_base,
+					 rio_base_addr + rio_ibw_size * netid,
+					 rio_ibw_size , 0);
+		if (ret) {
+			dev_err(&rdev->dev, "Error %d in mapping inbound window\n", ret);
+			dma_unmap_page(nets[netid].mport->dev.parent, nets[netid].dma_base, rio_ibw_size, DMA_BIDIRECTIONAL);
 			goto freedma;
 		}
 
@@ -654,7 +676,7 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 			goto freenode;
 		}
 
-			node->ndev = nets[netid].ndev;
+		node->ndev = nets[netid].ndev;
 		node->rdev = rdev;
 		node->devid = rdev->destid;
 		node->netid = netid;
@@ -671,8 +693,13 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 				goto freenode;
 			}
 
+#ifdef CONFIG_PPC
+			node->local_ptr = ioremap_prot(node->buffer_address,
+						NODE_MEMLEN,
+						pgprot_val(pgprot_cached(__pgprot(0))));
+#else
 			node->local_ptr = ioremap_cache(node->buffer_address,NODE_MEMLEN);
-
+#endif
 		} else {
 			node->local_ptr = dma_zalloc_coherent(rdev->net->hport->dev.parent,NODE_MEMLEN,
 										&node->buffer_address,GFP_KERNEL);
@@ -716,7 +743,9 @@ freedb:
 	rio_release_inb_dbell( nets[netid].mport, (rio_db|DB_START),
 			(rio_db|DB_END));
 freeinbmem:
-	rio_unmap_inb_region(rio_get_mport(rdev), (dma_addr_t)net_phys_mem);
+	dma_unmap_page(nets[netid].mport->dev.parent, nets[netid].dma_base,
+		       rio_ibw_size, DMA_BIDIRECTIONAL);
+	rio_unmap_inb_region(rio_get_mport(rdev), nets[netid].dma_base);
 freedma:
 	rio_release_dma(nets[netid].dmachan);
 freenode:
@@ -782,7 +811,8 @@ static int __init riosocket_net_init(void)
 				(rio_phys_mem + rio_phys_size - 1), rio_ibw_size);
 	} else {
 		/*TODO:Need to add support for using dma routines to allocate remote memory*/
-		pr_info("Please specify rio_phys_mem:rio_phys_size\n");
+		pr_info("%s: Please specify rio_phys_mem:rio_phys_size\n",
+			__func__);
 		return -EINVAL;
 	}
 
@@ -806,7 +836,6 @@ static int __init riosocket_net_init(void)
 static void __exit riosocket_net_exit(void)
 {
 	unsigned char i;
-	unsigned long net_phys_mem;
 
 	pr_info("RIOSocket Driver Initialization Unloading\n");
 
@@ -824,10 +853,11 @@ static void __exit riosocket_net_exit(void)
 			rio_release_inb_dbell(nets[i].mport, (rio_db|DB_START),
 					      (rio_db | DB_END));
 
-			net_phys_mem = rio_phys_mem +
-					rio_ibw_size * nets[i].mport->id;
+			dma_unmap_page(nets[i].mport->dev.parent,
+				       nets[i].dma_base, rio_ibw_size,
+				       DMA_BIDIRECTIONAL);
 			rio_unmap_inb_region(nets[i].mport,
-						(dma_addr_t)net_phys_mem);
+					     nets[i].dma_base);
 
 			rio_release_dma(nets[i].dmachan);
 			rio_release_inb_mbox(nets[i].mport, RIONET_MAILBOX);
