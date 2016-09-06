@@ -64,6 +64,7 @@ struct riosocket_msg_private {
 	int tx_cnt;
 	int ack_slot;
 	spinlock_t lock;
+	spinlock_t tx_lock;
 };
 
 struct riosocket_driver_params

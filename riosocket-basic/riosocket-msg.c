@@ -162,7 +162,7 @@ void riosocket_outb_msg_event(struct rio_mport *mport, void *dev_id, int mbox, i
 
 	dev_dbg(&ndev->dev,"%s: Start\n",__FUNCTION__);
 
-	spin_lock(&rnet->lock);
+	spin_lock(&rnet->tx_lock);
 
 	while (rnet->tx_cnt && (rnet->ack_slot != slot)) {
 		/* dma unmap single */
@@ -176,7 +176,7 @@ void riosocket_outb_msg_event(struct rio_mport *mport, void *dev_id, int mbox, i
 	if (rnet->tx_cnt < RIONET_TX_RING_SIZE)
 		netif_wake_queue(ndev);
 
-	spin_unlock(&rnet->lock);
+	spin_unlock(&rnet->tx_lock);
 
 	dev_dbg(&ndev->dev,"%s: End\n",__FUNCTION__);
 }
@@ -232,17 +232,17 @@ int riosocket_start_xmit_msg(struct sk_buff *skb, struct net_device *ndev)
 	dev_dbg(&ndev->dev,"%s: Start\n",__FUNCTION__);
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,7,0))
         local_irq_save(flags);
-        if (!spin_trylock(&rnet->lock)) {
+        if (!spin_trylock(&rnet->tx_lock)) {
                 local_irq_restore(flags);
                 return NETDEV_TX_LOCKED;
         }
 #else
-	spin_lock_irqsave(&rnet->lock, flags);
+	spin_lock_irqsave(&rnet->tx_lock, flags);
 #endif
 
 	if ((rnet->tx_cnt+1)  > RIONET_TX_RING_SIZE) {
 		netif_stop_queue(ndev);
-		spin_unlock_irqrestore(&rnet->lock,flags);
+		spin_unlock_irqrestore(&rnet->tx_lock,flags);
 		return NETDEV_TX_BUSY;
 	}
 
@@ -276,7 +276,7 @@ int riosocket_start_xmit_msg(struct sk_buff *skb, struct net_device *ndev)
 		}
 	}
 
-	spin_unlock_irqrestore(&rnet->lock,flags);
+	spin_unlock_irqrestore(&rnet->tx_lock,flags);
 	dev_dbg(&ndev->dev,"%s: End\n",__FUNCTION__);
 	return NETDEV_TX_OK;
 }

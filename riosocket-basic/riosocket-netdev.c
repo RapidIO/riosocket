@@ -229,6 +229,7 @@ int riosocket_netinit( struct riosocket_network *net )
 	priv->link  = 0;
 	priv->rnetpriv.mport = net->mport;
 	spin_lock_init(&priv->rnetpriv.lock);
+	spin_lock_init(&priv->rnetpriv.tx_lock);
 
 	net->ndev->dev_addr[0] = 0xC2;
 	net->ndev->dev_addr[1] = 0x00;
