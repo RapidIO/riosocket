@@ -230,7 +230,7 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 		node->posted_write += 1;
 
 
-	dev_dbg(&node->rdev->dev,"%s: Sent packet from %llx of size %d to node %d\n",
+	dev_dbg(&node->rdev->dev,"%s: Sent packet to %llx of size %d on node %d\n",
 			__FUNCTION__,rioaddr,skb->len,node->devid);
 
 	dev_dbg(&node->rdev->dev,"%s: End (%d)\n",__FUNCTION__,node->rdev->destid);
@@ -332,10 +332,11 @@ int riosocket_packet_drain( struct riosocket_node *node, int budget )
 		if ( length == 0 ) {
 				dev_err(&node->rdev->dev,"%s: Packet with len 0 received!!!!!\n",__FUNCTION__);
 		} else {
-
-			dev_dbg(&node->rdev->dev,"%s: Packet with len %d received at %llx\n",
-					__FUNCTION__,length,(node->buffer_address+ (node->mem_read*NODE_SECTOR_SIZE)));
-
+#ifdef DEBUG
+			dma_addr_t paddr = node->buffer_address + (node->mem_read * NODE_SECTOR_SIZE);
+			dev_dbg(&node->rdev->dev,"%s: Packet with len %d received at %pa\n",
+					__FUNCTION__,length, &paddr);
+#endif
 			if( hdr[0] == 0xFF ) {
 					hdr[1] = 0xFF;
 					hdr[2] = 0xFF;
@@ -683,8 +684,8 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 			goto freenode;
 		}
 
-		dev_dbg(&rdev->dev,"%s: Node %d allocated coherent memory at %llx\n",
-						__FUNCTION__,rdev->destid,node->buffer_address);
+		dev_dbg(&rdev->dev,"%s: Node %d allocated coherent memory at %pa\n",
+						__FUNCTION__,rdev->destid, &node->buffer_address);
 
 		if (!(node->db_res = rio_request_outb_dbell(node->rdev,
 							(rio_db|DB_START),
@@ -797,7 +798,7 @@ static int __init riosocket_net_init(void)
 
 	rio_register_driver(&riosocket_rio_driver);
 
-	pr_info("Done\n");
+	pr_info("%s: Done\n", __func__);
 
 	return 0;
 }
@@ -838,7 +839,7 @@ static void __exit riosocket_net_exit(void)
 
 	kmem_cache_destroy(riosocket_cache);
 
-	pr_info("Done\n");
+	pr_info("%s: Done\n", __func__);
 }
 
 
