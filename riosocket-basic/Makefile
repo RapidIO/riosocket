@@ -13,8 +13,8 @@ PWD := $(shell pwd)
 
 EXTRA_CFLAGS += -DCONFIG_RAPIDIO_DMA_ENGINE
 
-RIO_SYM := $(PWD)/../kernel-rapidio/Module.symvers
-RIO_INCLUDE := $(M)/../kernel-rapidio/include/
+RIO_SYM := $(PWD)/../../kernel-rapidio/Module.symvers
+RIO_INCLUDE := $(M)/../../kernel-rapidio/include/
 
 RIOSOCK_MODULE_OBJ := riosocket
 RIOSOCK_SRC_OBJ := riosocket-netdev.o riosocket-riodev.o riosocket-sysfs.o riosocket-msg.o
