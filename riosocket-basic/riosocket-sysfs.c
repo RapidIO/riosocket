@@ -48,7 +48,7 @@ static ssize_t riosocket_store_msgwatermark(struct device_driver *ddp,
 	if(!kstrtoul(buf, 10, &msgwatermark)) {
 		if( msgwatermark < 14 )
 			msgwatermark=0;
-			return count;
+		return count;
 	} else {
 		return 0;
 	}
