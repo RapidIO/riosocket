@@ -179,7 +179,6 @@ int riosocket_node_napi_init( struct riosocket_node *peer );
 int riosocket_node_napi_deinit( struct riosocket_node *node );
 void riosocket_send_hello_msg( unsigned char netid );
 void riosocket_send_bye_msg( unsigned char netid );
-int riosocket_check_network_nodes_active( unsigned char netid );
 int riosocket_send_packet( unsigned int netid, unsigned int destid, struct sk_buff *skb );
 int riosocket_send_broadcast( unsigned int netid, struct sk_buff *skb );
 int riosocket_packet_drain( struct riosocket_node *node, int budget );

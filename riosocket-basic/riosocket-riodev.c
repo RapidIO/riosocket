@@ -269,6 +269,9 @@ int riosocket_send_broadcast( unsigned int netid, struct sk_buff *skb )
 	}
 	spin_unlock_irqrestore(&nets[netid].lock,flags);
 
+	if (!count)
+		ret = -ENODEV;
+
 	return ret;
 }
 
@@ -388,28 +391,6 @@ int riosocket_packet_drain( struct riosocket_node *node, int budget )
 	dev_dbg(&node->rdev->dev,"%s: End (%d)\n",__FUNCTION__,node->rdev->destid);
 
 	return packetrxed;
-}
-
-int riosocket_check_network_nodes_active( unsigned char netid )
-{
-	int ret=0;
-	struct riosocket_node *node;
-	struct list_head *ele;
-	unsigned long flags;
-
-	spin_lock_irqsave(&nets[netid].lock,flags);
-
-	list_for_each (ele,&nets[netid].actnodelist) {
-
-		node=(struct riosocket_node*)list_entry(ele, struct riosocket_node, nodelist);
-
-		if( node->ready )
-			ret=1;
-	}
-
-	spin_unlock_irqrestore(&nets[netid].lock,flags);
-
-	return ret;
 }
 
 void riosocket_send_hello_ack_msg( struct rio_dev *rdev )

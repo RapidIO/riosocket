@@ -50,11 +50,6 @@ static int riosocket_start_xmit_dma( struct sk_buff *skb, struct net_device *net
 	priv = (struct riosocket_private*)netdev_priv(netdev);
 	rnet = (struct riosocket_msg_private *)&priv->rnetpriv;
 
-	if( !riosocket_check_network_nodes_active(priv->netid) ) {
-		dev_dbg(&netdev->dev,"%s: No active nodes found\n",__FUNCTION__);
-		return -ENODEV;
-	}
-
 	dev_dbg(&netdev->dev,"%s: Sending packet to node %d\n",__FUNCTION__,
 													destid);
 	if( destid == BROADCAST || is_multicast_ether_addr(eth->h_dest))
