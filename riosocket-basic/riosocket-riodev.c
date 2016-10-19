@@ -478,7 +478,7 @@ static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, u
 		}
 
 		/*Send a hello command incase during opening of network connection was not alive*/
-		if ( !node->rioaddress )
+		if (!node->ready)
 				rio_send_doorbell(node->rdev,DB_HELLO);
 
 		node->mem_read=0;
