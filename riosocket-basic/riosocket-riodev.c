@@ -436,14 +436,15 @@ void riosocket_send_hello_msg(unsigned char netid)
 void riosocket_send_bye_msg(unsigned char netid)
 {
 	struct riosocket_node *node;
-	spin_lock(&nets[netid].lock);
+	unsigned long flags;
 
+	spin_lock_irqsave(&nets[netid].lock, flags);
 	list_for_each_entry(node, &nets[netid].actnodelist, nodelist) {
 		rio_send_doorbell(node->rdev, rio_db|DB_BYE);
 		dev_info(&node->rdev->dev, "%s: Sent bye to %d node\n",
 			 __FUNCTION__, node->rdev->destid);
 	}
-	spin_unlock(&nets[netid].lock);
+	spin_unlock_irqrestore(&nets[netid].lock, flags);
 }
 
 static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, unsigned short sid,
@@ -736,15 +737,18 @@ static void riosocket_rio_remove(struct rio_dev *rdev)
 {
 	unsigned char netid=rdev->net->id;
 	struct riosocket_node *node;
+	unsigned long flags;
 
 	dev_dbg(&rdev->dev,"%s:Remove device %d\n",__FUNCTION__,rdev->destid);
 
+	spin_lock_irqsave(&nets[netid].lock, flags);
 	node=riosocket_get_node(&nets[netid].actnodelist,rdev);
+	if (node)
+		list_del(&node->nodelist);
+	spin_unlock_irqrestore(&nets[netid].lock, flags);
 
 	if (node) {
 		riosocket_node_napi_deinit(node);
-		
-		spin_lock(&nets[netid].lock);
 
 		if( node->db_res )
 			rio_release_outb_dbell(node->rdev, node->db_res);
@@ -757,10 +761,7 @@ static void riosocket_rio_remove(struct rio_dev *rdev)
 							node->local_ptr,node->buffer_address);
 		}
 
-		list_del(&node->nodelist);
 		kfree(node);
-
-		spin_unlock(&nets[netid].lock);
 	}
 }
 
@@ -818,8 +819,6 @@ static void __exit riosocket_net_exit(void)
 			if (nets[i].ndev)
 				riosocket_netdeinit(&nets[i]);
 
-			spin_lock(&nets[i].lock);
-
 			rio_release_inb_dbell(nets[i].mport, (rio_db|DB_START),
 					      (rio_db | DB_END));
 
@@ -832,8 +831,6 @@ static void __exit riosocket_net_exit(void)
 			rio_release_dma(nets[i].dmachan);
 			rio_release_inb_mbox(nets[i].mport, RIONET_MAILBOX);
 			rio_release_outb_mbox(nets[i].mport, RIONET_MAILBOX);
-
-			spin_unlock(&nets[i].lock);
 		}
 	}
 
