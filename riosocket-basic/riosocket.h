@@ -124,30 +124,24 @@ struct riocket_rxparam
         unsigned char kick;
 };
 
-inline static struct riosocket_node* riosocket_get_node( struct list_head *nodelist,struct rio_dev *rdev )
+static inline struct riosocket_node* riosocket_get_node(
+				struct list_head *nlist, struct rio_dev *rdev)
 {
-	struct list_head *ele;
 	struct riosocket_node *node;
-
-        list_for_each(ele, nodelist) {
-                 node = (struct riosocket_node*)list_entry(ele, struct riosocket_node, nodelist);
-                 if( node->rdev == rdev )
-                	 return node;
-        }
-        return NULL;
+	list_for_each_entry(node, nlist, nodelist)
+		if (node->rdev == rdev)
+			return node;
+	return NULL;
 }
 
-inline static struct riosocket_node* riosocket_get_node_id( struct list_head *nodelist,unsigned int id )
+static inline struct riosocket_node* riosocket_get_node_id(
+				struct list_head *nlist, unsigned int id)
 {
-	struct list_head *ele;
 	struct riosocket_node *node;
-
-        list_for_each(ele, nodelist) {
-                 node = (struct riosocket_node*)list_entry(ele, struct riosocket_node, nodelist);
-                 if( node->rdev->destid == id )
-                	 return node;
-        }
-        return NULL;
+	list_for_each_entry(node, nlist, nodelist)
+		if (node->rdev->destid == id)
+			 return node;
+	return NULL;
 }
 
 inline static unsigned int riosocket_get_node_id_from_mac(char *macAddr)

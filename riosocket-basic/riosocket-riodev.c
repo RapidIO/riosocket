@@ -244,12 +244,12 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 
 int riosocket_send_broadcast( unsigned int netid, struct sk_buff *skb )
 {
-	struct riosocket_node *node, *tmp;
+	struct riosocket_node *node;
 	int ret=0,count=0;
 	unsigned long flags=0;
 
 	spin_lock_irqsave(&nets[netid].lock,flags);
-	list_for_each_entry_safe(node, tmp,
+	list_for_each_entry(node,
 				 &nets[netid].actnodelist, nodelist) {
 
 		dev_dbg(&node->rdev->dev,"%s: Sending broadcast packet to %d\n",
@@ -419,41 +419,31 @@ void riosocket_send_hello_ack_msg( struct rio_dev *rdev )
 	dev_dbg(&rdev->dev,"%s: End (%d)\n",__FUNCTION__,rdev->destid);
 }
 
-void riosocket_send_hello_msg( unsigned char netid )
+void riosocket_send_hello_msg(unsigned char netid)
 {
 	struct riosocket_node *node;
-	struct list_head *ele;
 	unsigned long flags;
 
-	spin_lock_irqsave(&nets[netid].lock,flags);
-
-	list_for_each (ele,&nets[netid].actnodelist) {
-			node=(struct riosocket_node*)list_entry(ele, struct riosocket_node, nodelist);
-		rio_send_doorbell(node->rdev,rio_db|DB_HELLO);
-
-		dev_dbg(&node->rdev->dev,"%s: Sent hello to %d node\n",__FUNCTION__,node->rdev->destid);
+	spin_lock_irqsave(&nets[netid].lock, flags);
+	list_for_each_entry(node, &nets[netid].actnodelist, nodelist) {
+		rio_send_doorbell(node->rdev, rio_db|DB_HELLO);
+		dev_info(&node->rdev->dev, "%s: Sent hello to %d node\n",
+			__FUNCTION__, node->rdev->destid);
 	}
-
-	spin_unlock_irqrestore(&nets[netid].lock,flags);
-
+	spin_unlock_irqrestore(&nets[netid].lock, flags);
 }
 
-void riosocket_send_bye_msg( unsigned char netid )
+void riosocket_send_bye_msg(unsigned char netid)
 {
 	struct riosocket_node *node;
-	struct list_head *ele;
-
 	spin_lock(&nets[netid].lock);
 
-	list_for_each (ele,&nets[netid].actnodelist) {
-			node=(struct riosocket_node*)list_entry(ele, struct riosocket_node, nodelist);
-		rio_send_doorbell(node->rdev,rio_db|DB_BYE);
-
-		dev_dbg(&node->rdev->dev,"%s: Sent bye to %d node\n",__FUNCTION__,node->rdev->destid);
+	list_for_each_entry(node, &nets[netid].actnodelist, nodelist) {
+		rio_send_doorbell(node->rdev, rio_db|DB_BYE);
+		dev_info(&node->rdev->dev, "%s: Sent bye to %d node\n",
+			 __FUNCTION__, node->rdev->destid);
 	}
-
 	spin_unlock(&nets[netid].lock);
-
 }
 
 static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, unsigned short sid,
@@ -519,8 +509,7 @@ static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, u
 
 		node->mem_write = info>>CMD_SHIFT;
 
-		if (napi_schedule_prep(&node->napi))
-				__napi_schedule(&node->napi);
+		napi_schedule(&node->napi);
 
 	} else if (cmd == DB_UPD_RD_CNT) {
 

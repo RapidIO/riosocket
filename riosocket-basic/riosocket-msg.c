@@ -226,7 +226,7 @@ int riosocket_start_xmit_msg(struct sk_buff *skb, struct net_device *ndev)
 	struct riosocket_msg_private *rnet = &priv->rnetpriv;
 	struct ethhdr *eth = (struct ethhdr *)skb->data;
 	unsigned int destid=riosocket_get_node_id_from_mac(eth->h_dest);
-	struct riosocket_node *node, *tmp;
+	struct riosocket_node *node;
 	unsigned long flags;
 
 	dev_dbg(&ndev->dev,"%s: Start\n",__FUNCTION__);
@@ -250,7 +250,7 @@ int riosocket_start_xmit_msg(struct sk_buff *skb, struct net_device *ndev)
 		int count = 0;
 
 		spin_lock(&nets[priv->netid].lock);
-		list_for_each_entry_safe(node, tmp,
+		list_for_each_entry(node,
 				 &nets[priv->netid].actnodelist, nodelist) {
 
 			if (node->ready) {
