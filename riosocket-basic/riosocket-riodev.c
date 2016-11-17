@@ -651,7 +651,6 @@ static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id 
 		node->rdev = rdev;
 		node->devid = rdev->destid;
 		node->netid = netid;
-		INIT_LIST_HEAD(&node->mclist);
 		node->ringsize=NODE_MEMLEN/NODE_SECTOR_SIZE;
 
 		if ( rio_phys_mem && rio_phys_size ) {

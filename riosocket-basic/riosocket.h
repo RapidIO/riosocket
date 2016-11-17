@@ -86,7 +86,6 @@ struct riosocket_private {
 
 struct riosocket_node {
         struct list_head nodelist;
-        struct list_head mclist;
         struct rio_dev *rdev;
         struct net_device *ndev;
         struct resource *db_res;
