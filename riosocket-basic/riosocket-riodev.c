@@ -28,6 +28,7 @@
 #include <linux/etherdevice.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/reboot.h>
 
 #include <linux/rio_drv.h>
 #include <linux/rio_ids.h>
@@ -65,7 +66,6 @@ extern const struct attribute_group *riosocket_drv_attr_groups[];
 struct riosocket_driver_params stats;
 struct riosocket_network nets[MAX_NETS];
 
-static unsigned long net_table=0;
 static void *riosocket_cache=NULL;
 
 static struct rio_device_id riosocket_id_table[] = {
@@ -210,8 +210,9 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 		if( PTR_ERR(tx) == -EBUSY ) {
 			return NETDEV_TX_BUSY;
 		} else {
-			dev_err(&node->rdev->dev,"Error in dma prep\n");
-			return -EIO;
+			dev_err(&node->rdev->dev,"Error %ld in DMA xfer prep\n",
+				PTR_ERR(tx));
+			return PTR_ERR(tx);
 		}
 	}
 
@@ -441,8 +442,8 @@ void riosocket_send_bye_msg(unsigned char netid)
 	spin_lock_irqsave(&nets[netid].lock, flags);
 	list_for_each_entry(node, &nets[netid].actnodelist, nodelist) {
 		rio_send_doorbell(node->rdev, rio_db|DB_BYE);
-		dev_info(&node->rdev->dev, "%s: Sent bye to %d node\n",
-			 __FUNCTION__, node->rdev->destid);
+		pr_info("riosocket: %s: Sent DB_BYE to node %s\n",
+			 __func__, rio_name(node->rdev));
 	}
 	spin_unlock_irqrestore(&nets[netid].lock, flags);
 }
@@ -529,250 +530,439 @@ static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, u
 
 static int riosocket_rio_probe(struct rio_dev *rdev, const struct rio_device_id *id)
 {
-	unsigned int srcops,dstops;
-	struct riosocket_node *node=NULL;
-	int ret=0;
-	unsigned char netid=rdev->net->id;
-	phys_addr_t net_phys_mem;
+	return -ENODEV;
+}
 
-	dev_dbg(&rdev->dev,"%s: Probe %d device\n",__FUNCTION__,rdev->destid);
+/*
+ * rsock_prep_mport - request local mport device resources and initialize
+ *                    network device
+ * @mport: pointer to mport device
+ * @net: pointer to network data structure
+ * @net_phys_mem: physical address of associated memory block
+ *
+ * When a new mport device is added reserves required resources
+ * and initializes/registers associated network device object.
+ */
+static int rsock_prep_mport(struct rio_mport *mport,
+			struct riosocket_network *net, phys_addr_t net_phys_mem)
+{
+	struct page *page;
+	unsigned int srcops, dstops;
+	int ret;
 
-	if (netid >= MAX_NETS) {
+	pr_info("riosocket: prep mport %s net_%d\n", mport->name, net->id);
+
+	if ((net_phys_mem + rio_ibw_size) > (rio_phys_mem + rio_phys_size)) {
+		dev_err(&mport->dev,
+			"Invalid memory configuration for net_%d\n", net->id);
+			return -EINVAL;
+	}
+
+	pr_info("riosocket: Initializing network %d", net->id);
+
+	rio_local_read_config_32(mport, RIO_SRC_OPS_CAR, &srcops);
+	rio_local_read_config_32(mport, RIO_DST_OPS_CAR, &dstops);
+
+	if (!is_rionet_capable(srcops, dstops)) {
+		pr_err("riosocket: MPORT (%s) not capable of messaging\n",
+			mport->name);
 		return -EINVAL;
 	}
 
-	net_phys_mem = rio_phys_mem + (rio_ibw_size * netid);
+	net->mport = mport;
+	spin_lock_init(&net->lock);
+	INIT_LIST_HEAD(&net->actnodelist);
+	net->dmachan = rio_request_mport_dma(mport);
 
-	/*check if the network is already initialized. If not, carry out
-	 * per adapter network init*/
-	if (!(net_table & (0x1 << netid))) {
-
-		struct page *page;
-
-		if ((net_phys_mem + rio_ibw_size) >
-				(rio_phys_mem + rio_phys_size)) {
-			dev_err(&rdev->net->hport->dev,
-				"Invalid memory configuration for net=%d\n",
-				netid);
-			return -EINVAL;
-		}
-
-		dev_dbg(&rdev->dev,"%s:Initializing network %d",__FUNCTION__,netid);
-
-		rio_local_read_config_32(rio_get_mport(rdev), RIO_SRC_OPS_CAR,
-				 &srcops);
-		rio_local_read_config_32(rio_get_mport(rdev), RIO_DST_OPS_CAR,
-				 &dstops);
-
-		if (!is_rionet_capable(srcops, dstops)) {
-			dev_err(&rdev->dev,"Mport not capable of messaging\n");
-			return -EINVAL;
-		}
-
-		nets[netid].id=netid;
-		nets[netid].mport   = rio_get_mport(rdev);
-		spin_lock_init(&nets[netid].lock);
-		INIT_LIST_HEAD(&nets[netid].actnodelist);
-		nets[netid].dmachan = rio_request_dma(rdev);
-
-		if (nets[netid].dmachan == NULL) {
-				dev_err(&rdev->dev,"Error in allocating DMA channel\n");
-			return -ENOMEM;
-		}
-
-		/*We direct map the rio address to pcie memory.
-		 * FIXME: Get the max memory populated and dynamically configure the number of
-		 * inbound mappings needed in multiple of 16GB */
-		page = pfn_to_page(PFN_DOWN(net_phys_mem));
-
-		nets[netid].dma_base = dma_map_page(nets[netid].mport->dev.parent, page,
-				      0, rio_ibw_size, DMA_BIDIRECTIONAL);
-		if (dma_mapping_error(nets[netid].mport->dev.parent, nets[netid].dma_base)) {
-			dev_err(nets[netid].mport->dev.parent, "Failed to map DMA page\n");
-			ret = -EIO;
-			goto freedma;
-		}
-
-		ret = rio_map_inb_region(rio_get_mport(rdev), nets[netid].dma_base,
-					 rio_base_addr + rio_ibw_size * netid,
-					 rio_ibw_size , 0);
-		if (ret) {
-			dev_err(&rdev->dev, "Error %d in mapping inbound window\n", ret);
-			dma_unmap_page(nets[netid].mport->dev.parent, nets[netid].dma_base, rio_ibw_size, DMA_BIDIRECTIONAL);
-			goto freedma;
-		}
-
-		/*Get the doorbell whcih will be used to exchange IPC and link information*/
-		if ((ret=rio_request_inb_dbell(rio_get_mport(rdev),
-						(void *)&nets[netid],
-						(rio_db|DB_START),
-						(rio_db|DB_END),
-						riosocket_inb_dbell_event)) < 0) {
-				dev_err(&rdev->dev,"Error in allocating inbound doorbell\n");
-			goto freeinbmem;
-		}
-
-		/*Do vnic initializations*/
-		if((ret=riosocket_netinit(&nets[netid])) < 0)
-				goto freedb;
-
-        	if ((ret = rio_request_inb_mbox(rio_get_mport(rdev),
-                                   (void *)nets[netid].ndev,
-                                   RIONET_MAILBOX,
-                                   RIONET_RX_RING_SIZE,
-                                   riosocket_inb_msg_event)) < 0)
-                	goto freeimb;
-
-        	if ((ret = rio_request_outb_mbox(rio_get_mport(rdev),
-                                (void *)nets[netid].ndev,
-                                RIONET_MAILBOX,
-                                RIONET_TX_RING_SIZE,
-                                riosocket_outb_msg_event)) < 0)
-                	goto freeomb;
-
-		net_table |= (0x1 << netid);
-			
-	} else if (nets[netid].ndev == NULL) {
-			dev_err(&rdev->dev,"No associated vnic found for network = %d\n",netid);
-		return -EINVAL;
+	if (!net->dmachan) {
+		dev_err(&mport->dev,"Error in allocating DMA channel\n");
+		return -ENODEV;
 	}
 
-	/*Initialize the node*/
-	if (dev_is_rionet_capable(rdev)) {
+	page = pfn_to_page(PFN_DOWN(net_phys_mem));
 
-		unsigned long flags;
-
-		if (!(node = kzalloc(sizeof(struct riosocket_node),GFP_KERNEL))) {
-			ret=-ENOMEM;
-			goto freenode;
-		}
-
-		node->ndev = nets[netid].ndev;
-		node->rdev = rdev;
-		node->devid = rdev->destid;
-		node->netid = netid;
-		node->ringsize=NODE_MEMLEN/NODE_SECTOR_SIZE;
-
-		if ( rio_phys_mem && rio_phys_size ) {
-			node->buffer_address = net_phys_mem +
-						(node->devid * NODE_MEMLEN);
-
-			if ((node->buffer_address + NODE_MEMLEN) >
-			    (net_phys_mem + rio_ibw_size )) {
-				dev_err(&rdev->dev,"Device memory overflow\n");
-				goto freenode;
-			}
-
-#ifdef CONFIG_PPC
-			node->local_ptr = ioremap_prot(node->buffer_address,
-						NODE_MEMLEN,
-						pgprot_val(pgprot_cached(__pgprot(0))));
-#else
-			node->local_ptr = ioremap_cache(node->buffer_address,NODE_MEMLEN);
-#endif
-		} else {
-			node->local_ptr = dma_zalloc_coherent(rdev->net->hport->dev.parent,NODE_MEMLEN,
-										&node->buffer_address,GFP_KERNEL);
-		}
-
-		if( node->local_ptr == NULL ) {
-			dev_err(&rdev->dev,"Error in allocating coherent memory\n");
-			ret=-ENOMEM;
-			goto freenode;
-		}
-
-		dev_dbg(&rdev->dev,"%s: Node %d allocated coherent memory at %pa\n",
-						__FUNCTION__,rdev->destid, &node->buffer_address);
-
-		if (!(node->db_res = rio_request_outb_dbell(node->rdev,
-							(rio_db|DB_START),
-							(rio_db|DB_END)))) {
-			dev_err(&rdev->dev,"Error requesting RapidIO resources");
-			ret=-ENOMEM;
-			goto freenode;
-		}
-		
-		riosocket_node_napi_init(node);
-
-		spin_lock_irqsave(&nets[netid].lock, flags);
-		list_add_tail(&node->nodelist, &nets[netid].actnodelist);
-		spin_unlock_irqrestore(&nets[netid].lock,flags);
-
-		dev_info(&rdev->dev,"Node %d successfully initialized",node->devid);
+	net->dma_base = dma_map_page(mport->dev.parent, page, 0, rio_ibw_size,
+				     DMA_BIDIRECTIONAL);
+	if (dma_mapping_error(mport->dev.parent, net->dma_base)) {
+		dev_err(mport->dev.parent, "Failed to map DMA page\n");
+		ret = -EIO;
+		goto err_map_dma;
 	}
 
-	rio_set_drvdata(rdev, nets[netid].ndev);
+	ret = rio_map_inb_region(mport, net->dma_base,
+				 rio_base_addr + (rio_ibw_size * net->id),
+				 rio_ibw_size , 0);
+	if (ret) {
+		dev_err(&mport->dev,
+			"Error %d in mapping inbound window\n", ret);
+		dma_unmap_page(mport->dev.parent, net->dma_base, rio_ibw_size,
+			       DMA_BIDIRECTIONAL);
+		goto err_map_ibw;
+	}
+
+	/*
+	 * Get IDB range which will be used to exchange IPC and link information
+	 */
+	ret = rio_request_inb_dbell(mport, net,
+				    rio_db | DB_START, rio_db | DB_END,
+				    riosocket_inb_dbell_event);
+	if (ret) {
+		dev_err(&mport->dev, "Error in allocating inbound doorbell\n");
+		goto err_idb;
+	}
+
+	ret = riosocket_netinit(net);
+	if (ret) {
+		dev_err(&mport->dev,"NDEV initialization failed err=%d\n", ret);
+		goto err_netinit;
+	}
+
+	ret = rio_request_inb_mbox(mport, net->ndev,
+				RIONET_MAILBOX, RIONET_RX_RING_SIZE,
+				riosocket_inb_msg_event);
+	if (ret) {
+		dev_err(&mport->dev,
+			"Failed to obtain IB_MBOX err=%d\n", ret);
+		goto err_imb;
+	}
+
+	ret = rio_request_outb_mbox(mport, net->ndev,
+				RIONET_MAILBOX, RIONET_TX_RING_SIZE,
+				riosocket_outb_msg_event);
+	if (ret) {
+		dev_err(&mport->dev,
+			"Failed to obtain OB_MBOX err=%d\n", ret);
+		goto err_omb;
+	}
 
 	return 0;
 
-freeomb:
-        rio_release_inb_mbox(nets[netid].mport, RIONET_MAILBOX);
-freeimb:
-        rio_release_outb_mbox(nets[netid].mport, RIONET_MAILBOX);
-freedb:
-	rio_release_inb_dbell( nets[netid].mport, (rio_db|DB_START),
-			(rio_db|DB_END));
-freeinbmem:
-	dma_unmap_page(nets[netid].mport->dev.parent, nets[netid].dma_base,
+err_omb:
+        rio_release_inb_mbox(mport, RIONET_MAILBOX);
+err_imb:
+	riosocket_netdeinit(net);
+err_netinit:
+	rio_release_inb_dbell(mport, rio_db | DB_START, rio_db | DB_END);
+err_idb:
+	rio_unmap_inb_region(mport, net->dma_base);
+err_map_ibw:
+	dma_unmap_page(mport->dev.parent, net->dma_base,
 		       rio_ibw_size, DMA_BIDIRECTIONAL);
-	rio_unmap_inb_region(rio_get_mport(rdev), nets[netid].dma_base);
-freedma:
-	rio_release_dma(nets[netid].dmachan);
+err_map_dma:
+	rio_release_dma(net->dmachan);
+	net->mport = NULL;
+	return ret;
+}
+
+/*
+ * rsock_add_dev - add new remote RapidIO device
+ * @dev: device object associated with RapidIO device
+ * @sif: subsystem interface
+ *
+ * Adds the specified RapidIO device (if applicable) into peers list of
+ * the corresponding network.
+ */
+static int rsock_add_dev(struct device *dev, struct subsys_interface *sif)
+{
+	struct rio_dev *rdev = to_rio_dev(dev);
+	struct riosocket_node *node;
+	unsigned char netid;
+	phys_addr_t net_phys_mem;
+	unsigned long flags;
+	struct riosocket_network *net;
+	struct riosocket_private *priv;
+	int ret;
+
+	netid = rdev->net->id;
+
+	if (netid >= MAX_NETS)
+		return -EINVAL;
+
+	net = &nets[netid];
+	net_phys_mem = rio_phys_mem + (rio_ibw_size * netid);
+
+	if (!net->mport) {
+		dev_info(&rdev->dev, "%s: Initialize MPORT\n", __func__);
+		net->id = netid;
+		ret = rsock_prep_mport(rdev->net->hport, net, net_phys_mem);
+		if (ret) {
+			dev_err(&rdev->dev,
+				"%s: MPORT initialization failed (err=%d)\n",
+				__func__, ret);
+			return ret;
+		}
+	}
+
+	if (!dev_is_rionet_capable(rdev))
+		return 0;
+
+	pr_info("riosocket: add device %s\n", rio_name(rdev));
+
+	node = kzalloc(sizeof(*node), GFP_KERNEL);
+	if (!node) {
+		return -ENOMEM;
+	}
+
+	node->ndev = net->ndev;
+	node->netid = netid;
+	node->rdev = rdev;
+	node->devid = rdev->destid;
+	node->ringsize = NODE_MEMLEN/NODE_SECTOR_SIZE;
+
+	if (rio_phys_mem && rio_phys_size) {
+		node->buffer_address = net_phys_mem +
+						(node->devid * NODE_MEMLEN);
+
+		if ((node->buffer_address + NODE_MEMLEN) >
+					(net_phys_mem + rio_ibw_size )) {
+			dev_err(&rdev->dev,"Device memory overflow\n");
+			goto freenode;
+		}
+
+#ifdef CONFIG_PPC
+		node->local_ptr = ioremap_prot(node->buffer_address,
+					NODE_MEMLEN,
+					pgprot_val(pgprot_cached(__pgprot(0))));
+#else
+		node->local_ptr = ioremap_cache(node->buffer_address,
+						NODE_MEMLEN);
+#endif
+	} else {
+		node->local_ptr = dma_zalloc_coherent(
+					net->mport->dev.parent,
+					NODE_MEMLEN, &node->buffer_address,
+					GFP_KERNEL);
+	}
+
+	if (node->local_ptr == NULL) {
+		dev_err(&rdev->dev, "Failed to allocate coherent memory\n");
+		ret =- ENOMEM;
+		goto freenode;
+	}
+
+	dev_dbg(&rdev->dev,
+		"%s: Node %s (%d) allocated coherent memory at %pa\n",
+		__func__, rio_name(rdev), rdev->destid, &node->buffer_address);
+
+	node->db_res = rio_request_outb_dbell(node->rdev, rio_db | DB_START,
+					      rio_db | DB_END);
+	if (!node->db_res) {
+		dev_err(&rdev->dev,
+			"Error requesting RapidIO outbound doorbells");
+		ret = -ENOMEM;
+		goto freenode;
+	}
+
+	riosocket_node_napi_init(node);
+
+	spin_lock_irqsave(&net->lock, flags);
+	list_add_tail(&node->nodelist, &net->actnodelist);
+	spin_unlock_irqrestore(&net->lock,flags);
+
+	priv = netdev_priv(net->ndev);
+	if (priv->link) {
+		rio_send_doorbell(rdev, rio_db | DB_HELLO);
+		dev_info(&rdev->dev, "%s: Sent hello to %s (%d)\n",
+			__func__, rio_name(rdev), rdev->destid);
+	}
+
+	dev_info(&rdev->dev, "%s: Node %s (%d) successfully initialized",
+		 __func__, rio_name(rdev), node->devid);
+
+	return 0;
+
 freenode:
-	if( node ) {
-		if( node->local_ptr ) {
-			if ( rio_phys_mem && rio_phys_size )
+	if (node) {
+		if (node->local_ptr) {
+			if (rio_phys_mem && rio_phys_size)
 				iounmap(node->local_ptr);
 			else
-				dma_free_coherent(rdev->net->hport->dev.parent,NODE_MEMLEN,
+				dma_free_coherent(net->mport->dev.parent,NODE_MEMLEN,
 						node->local_ptr,node->buffer_address);
 		}
+
 		kfree(node);
 	}
+
 	return ret;
-}	
+}
 
-static void riosocket_rio_remove(struct rio_dev *rdev)
+/*
+ * rsock_remove_dev - remove remote RapidIO device from peer devices list
+ * @dev: device object associated with RapidIO device
+ * @sif: subsystem interface
+ *
+ * Removes the specified RapidIO device (if applicable) from peers list of
+ * the corresponding network.
+ */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0))
+static void
+#else
+static int
+#endif
+rsock_remove_dev(struct device *dev, struct subsys_interface *sif)
 {
-	unsigned char netid=rdev->net->id;
+	struct rio_dev *rdev = to_rio_dev(dev);
+	unsigned char netid = rdev->net->id;
 	struct riosocket_node *node;
+	struct riosocket_network *net;
 	unsigned long flags;
+	int state;
+	int ret = 0;
 
-	dev_dbg(&rdev->dev,"%s:Remove device %d\n",__FUNCTION__,rdev->destid);
+	if (netid >= MAX_NETS) {
+		ret = -EINVAL;
+		goto exit;
+	}
 
-	spin_lock_irqsave(&nets[netid].lock, flags);
-	node=riosocket_get_node(&nets[netid].actnodelist,rdev);
+	if (!dev_is_rionet_capable(rdev))
+		goto exit;
+
+	net = &nets[netid];
+
+	if (!net->mport) {
+		pr_err("riosocket: %s: net_%d MPORT is not initialized\n",
+			__func__, netid);
+		ret = -EIO;
+		goto exit;
+	}
+
+	state = atomic_read(&rdev->state);
+
+	pr_info("riosocket: remove device %s (did=%d), state=%d\n",
+		rio_name(rdev), rdev->destid, state);
+
+	spin_lock_irqsave(&net->lock, flags);
+	node = riosocket_get_node(&net->actnodelist, rdev);
 	if (node)
 		list_del(&node->nodelist);
-	spin_unlock_irqrestore(&nets[netid].lock, flags);
+	spin_unlock_irqrestore(&net->lock, flags);
 
 	if (node) {
 		riosocket_node_napi_deinit(node);
 
-		if( node->db_res )
-			rio_release_outb_dbell(node->rdev, node->db_res);
+		/*
+		 * Removal of active remote device can be caused by local node
+		 * shutdown, driver unloading or forced mport device removal.
+		 * If this is the case, notify the remote device that we are
+		 * leaving (closing connection).
+		 */
+		if (state == RIO_DEVICE_RUNNING ||
+				state == RIO_DEVICE_SHUTDOWN) {
+			pr_info("riosocket: %s: Send DB_BYE to node %s\n",
+				__func__, rio_name(rdev));
+			rio_send_doorbell(rdev, rio_db | DB_BYE);
+		}
 
-		if( node->local_ptr ) {
-			if ( rio_phys_mem && rio_phys_size )
+		if (node->db_res)
+			rio_release_outb_dbell(rdev, node->db_res);
+
+		if (node->local_ptr) {
+			if (rio_phys_mem && rio_phys_size)
 				iounmap(node->local_ptr);
 			else
-				dma_free_coherent(rdev->net->hport->dev.parent,NODE_MEMLEN,
-							node->local_ptr,node->buffer_address);
+				dma_free_coherent(net->mport->dev.parent,
+						  NODE_MEMLEN, node->local_ptr,
+						  node->buffer_address);
 		}
 
 		kfree(node);
 	}
+
+exit: ;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,3,0))
+	return ret;
+#endif
 }
+
+/*
+ * rsock_remove_mport - service removal of local mport device
+ * @dev: device object associated with mport
+ * @class_intf: class interface
+ *
+ * Unregister associated network device and release allocated resources.
+ */
+static void rsock_remove_mport(struct device *dev,
+			       struct class_interface *class_intf)
+{
+	struct rio_mport *mport = to_rio_mport(dev);
+	unsigned char netid = mport->net->id;
+	struct riosocket_network *net;
+
+	pr_info("riosocket: remove mport %s\n", mport->name);
+
+	if (netid >= MAX_NETS)
+		return;
+
+	net = &nets[netid];
+
+	if (!net->mport)
+		return;
+
+	if (net->ndev)
+		riosocket_netdeinit(net);
+	net->ndev = NULL;
+
+	rio_release_inb_dbell(mport, rio_db | DB_START, rio_db | DB_END);
+
+	dma_unmap_page(mport->dev.parent, net->dma_base, rio_ibw_size,
+			DMA_BIDIRECTIONAL);
+	rio_unmap_inb_region(mport, net->dma_base);
+	rio_release_dma(net->dmachan);
+	rio_release_inb_mbox(mport, RIONET_MAILBOX);
+	rio_release_outb_mbox(mport, RIONET_MAILBOX);
+
+	net->mport = NULL;
+}
+
+static int riosocket_shutdown(struct notifier_block *nb, unsigned long code,
+			      void *unused)
+{
+	int i;
+
+	pr_info("riosocket: %s\n", __func__);
+
+	for (i = 0; i < MAX_NETS; i++) {
+		if (nets[i].mport)
+			riosocket_send_bye_msg(i);
+	}
+
+	return NOTIFY_DONE;
+}
+
+/*
+ * rsock_interface handles addition/removal of remote RapidIO devices
+ */
+static struct subsys_interface rsock_interface = {
+	.name		= "rsock_if",
+	.subsys		= &rio_bus_type,
+	.add_dev	= rsock_add_dev,
+	.remove_dev	= rsock_remove_dev,
+};
+
+/*
+ * rio_mport_interface handles addition/removal local mport devices
+ */
+static struct class_interface rio_mport_interface __refdata = {
+	.class = &rio_mport_class,
+	.add_dev = NULL,
+	.remove_dev = rsock_remove_mport,
+};
+
+static struct notifier_block rionet_notifier = {
+	.notifier_call = riosocket_shutdown,
+};
 
 static struct rio_driver riosocket_rio_driver = {
 	.name     = "riosocket",
 	.id_table = riosocket_id_table,
 	.probe    = riosocket_rio_probe,
-	.remove   = riosocket_rio_remove,
 };
 
 static int __init riosocket_net_init(void)
 {
+	int ret;
+
 	pr_info("RIOSocket Driver Version %s Initialization...\n",RIOSOCKET_VERSION);
 
 	if(rio_phys_mem && rio_phys_size) {
@@ -794,8 +984,43 @@ static int __init riosocket_net_init(void)
 	memset( nets, 0 , (sizeof(struct riosocket_network)*MAX_NETS));
 	memset( &stats, 0, sizeof(struct riosocket_driver_params));
 
-	riosocket_rio_driver.driver.groups=riosocket_drv_attr_groups;
 
+	ret = register_reboot_notifier(&rionet_notifier);
+	if (ret) {
+		pr_err("%s: failed to register reboot notifier (err=%d)\n",
+		       __func__, ret);
+		return ret;
+	}
+
+
+	/*
+	 * Register as rapidio_port class interface to get notifications about
+	 * mport additions and removals.
+	 */
+	ret = class_interface_register(&rio_mport_interface);
+	if (ret) {
+		pr_err("class_interface_register error: %d\n", ret);
+		return ret;
+	}
+
+	/*
+	 * Register as RapidIO bus interface to get notifications about
+	 * addition/removal of remote RapidIO devices.
+	 */
+	ret = subsys_interface_register(&rsock_interface);
+	if (ret) {
+		pr_err("subsys_interface_register error: %d\n", ret);
+		class_interface_unregister(&rio_mport_interface);
+		return ret;
+	}
+
+	/*
+	 * FIXME: Temporary keep registering this module as device driver with
+	 * dummy probe routine (always returns -ENODEV) to preserve device
+	 * driver attributes at the same location as the original version
+	 * created by Centaurus Computing.
+	 */
+	riosocket_rio_driver.driver.groups=riosocket_drv_attr_groups;
 	rio_register_driver(&riosocket_rio_driver);
 
 	pr_info("%s: Done\n", __func__);
@@ -807,13 +1032,21 @@ static void __exit riosocket_net_exit(void)
 {
 	unsigned char i;
 
-	pr_info("RIOSocket Driver Initialization Unloading\n");
+	pr_info("%s: RIOSocket Driver Unloading\n", __func__);
 
 	rio_unregister_driver(&riosocket_rio_driver);
+
+	kmem_cache_destroy(riosocket_cache);
+	unregister_reboot_notifier(&rionet_notifier);
+	subsys_interface_unregister(&rsock_interface);
+	class_interface_unregister(&rio_mport_interface);
 
 	for( i=0; i < MAX_NETS; i++ ) {
 
 		if (nets[i].mport) {
+
+			pr_info("%s: ATTN: Cleanup for mport_%d (%s)\n",
+				__func__, i, nets[i].mport->name);
 
 			if (nets[i].ndev)
 				riosocket_netdeinit(&nets[i]);
@@ -830,14 +1063,13 @@ static void __exit riosocket_net_exit(void)
 			rio_release_dma(nets[i].dmachan);
 			rio_release_inb_mbox(nets[i].mport, RIONET_MAILBOX);
 			rio_release_outb_mbox(nets[i].mport, RIONET_MAILBOX);
+
+			nets[i].mport = NULL;
 		}
 	}
 
-	kmem_cache_destroy(riosocket_cache);
-
 	pr_info("%s: Done\n", __func__);
 }
-
 
 module_init(riosocket_net_init);
 module_exit(riosocket_net_exit);

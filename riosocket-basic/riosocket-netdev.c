@@ -235,6 +235,7 @@ int riosocket_netinit( struct riosocket_network *net )
 	net->ndev->netdev_ops = &riosocket_net_ops;
 	net->ndev->mtu = MAX_MTU;
 	net->ndev->features =  (NETIF_F_HW_CSUM | NETIF_F_HIGHDMA | NETIF_F_LLTX);
+	SET_NETDEV_DEV(net->ndev, &net->mport->dev);
 
 	dev_dbg(&net->ndev->dev,"%s: End\n",__FUNCTION__);
 
@@ -247,6 +248,7 @@ int riosocket_netdeinit( struct riosocket_network *net )
 
 	unregister_netdev(net->ndev);
 	free_netdev(net->ndev);
+	net->ndev = NULL;
 
 	dev_dbg(&net->ndev->dev,"%s: End\n",__FUNCTION__);
 
