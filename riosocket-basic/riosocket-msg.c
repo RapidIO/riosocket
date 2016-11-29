@@ -50,6 +50,7 @@ static int riosocket_rx_clean(struct net_device *ndev)
 	struct riosocket_private *priv = netdev_priv(ndev);
 	struct riosocket_msg_private *rnet = &priv->rnetpriv;
 	void *data;
+	int msg_size;
 
 	dev_dbg(&ndev->dev,"%s: Start\n",__FUNCTION__);
 
@@ -59,11 +60,12 @@ static int riosocket_rx_clean(struct net_device *ndev)
 		if (!rnet->rx_skb[i])
 			continue;
 
-		if (!(data = rio_get_inb_message(rnet->mport, RIONET_MAILBOX)))
+		if (!(data = rio_get_inb_message(rnet->mport, RIONET_MAILBOX,
+						 &msg_size)))
 			break;
 
 		rnet->rx_skb[i]->data = data;
-		skb_put(rnet->rx_skb[i], RIO_MAX_MSG_SIZE);
+		skb_put(rnet->rx_skb[i], msg_size);
 		rnet->rx_skb[i]->dev=ndev;
 		rnet->rx_skb[i]->ip_summed=CHECKSUM_UNNECESSARY;
 		rnet->rx_skb[i]->protocol =
@@ -74,7 +76,7 @@ static int riosocket_rx_clean(struct net_device *ndev)
 				ndev->stats.rx_dropped++;
 		} else {
 				ndev->stats.rx_packets++;
-				ndev->stats.rx_bytes += RIO_MAX_MSG_SIZE;
+				ndev->stats.rx_bytes += msg_size;
 		}
 
 	} while ((i = (i + 1) % RIONET_RX_RING_SIZE) != rnet->rx_slot);
