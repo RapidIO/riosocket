@@ -51,6 +51,7 @@ static int riosocket_rx_clean(struct net_device *ndev)
 	struct riosocket_msg_private *rnet = &priv->rnetpriv;
 	void *data;
 	int msg_size;
+	unsigned char *hdr;
 
 	dev_dbg(&ndev->dev,"%s: Start\n",__FUNCTION__);
 
@@ -63,6 +64,18 @@ static int riosocket_rx_clean(struct net_device *ndev)
 		if (!(data = rio_get_inb_message(rnet->mport, RIONET_MAILBOX,
 						 &msg_size)))
 			break;
+
+		hdr = data;
+
+		msg_size = (hdr[2] << 8) | hdr[1];
+
+		if( hdr[0] == 0xFF ) {
+			hdr[1] = 0xFF;
+			hdr[2] = 0xFF;
+		} else {
+			hdr[1] = 0x00;
+			hdr[2] = 0x00;
+		}
 
 		rnet->rx_skb[i]->data = data;
 		skb_put(rnet->rx_skb[i], msg_size);
@@ -114,8 +127,12 @@ static int riosocket_queue_tx_msg(struct sk_buff *skb, struct net_device *ndev,
 {
 	struct riosocket_private *priv = netdev_priv(ndev);
 	struct riosocket_msg_private *rnet = &priv->rnetpriv;
+	unsigned char *hdr = skb->data;
 
 	dev_dbg(&ndev->dev,"%s: Start\n",__FUNCTION__);
+
+	hdr[1] = (unsigned char)(skb->len & 0xFF);
+	hdr[2] = (unsigned char)((skb->len >> 8) & 0xFF);
 
 	rio_add_outb_message(rnet->mport, rdev, 0, skb->data, skb->len);
 	rnet->tx_skb[rnet->tx_slot] = skb;
