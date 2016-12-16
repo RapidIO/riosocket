@@ -185,7 +185,11 @@ void riosocket_outb_msg_event(struct rio_mport *mport, void *dev_id, int mbox, i
 
 	while (rnet->tx_cnt && (rnet->ack_slot != slot)) {
 		/* dma unmap single */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,13,0))
 		dev_kfree_skb_irq(rnet->tx_skb[rnet->ack_slot]);
+#else
+		dev_consume_skb_irq(rnet->tx_skb[rnet->ack_slot]);
+#endif
 		rnet->tx_skb[rnet->ack_slot] = NULL;
 		++rnet->ack_slot;
 		rnet->ack_slot &= (RIONET_TX_RING_SIZE - 1);

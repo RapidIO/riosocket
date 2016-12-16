@@ -138,7 +138,11 @@ static void riosocket_tx_cb( void *p )
 	param->node->ndev->stats.tx_packets++;
 	param->node->ndev->stats.tx_bytes += param->skb->len;
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,13,0))
 	dev_kfree_skb_irq(param->skb);
+#else
+	dev_consume_skb_irq(param->skb);
+#endif
 
 	dev_dbg(&param->node->rdev->dev,"%s: End (%d)\n",__FUNCTION__,param->node->rdev->destid);
 
