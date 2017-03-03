@@ -200,6 +200,10 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 	tx_data.rio_addr_u = 0;
 	tx_data.rio_addr = rioaddr;
 	tx_data.wr_type = RDW_ALL_NWRITE;
+	tx_data.ssdist = 0;
+	tx_data.sssize = 0;
+	tx_data.dsdist = 0;
+	tx_data.dssize = 0;
 
 	flags = DMA_CTRL_ACK | DMA_PREP_INTERRUPT;
 
