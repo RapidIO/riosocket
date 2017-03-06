@@ -103,6 +103,7 @@ struct riosocket_node {
     	unsigned char mem_write;
     	unsigned char mem_read;
     	unsigned char ringsize;
+	spinlock_t dma_lock;
 };
 
 struct riosocket_network {

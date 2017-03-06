@@ -156,13 +156,17 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 	enum dma_ctrl_flags	flags;
 	dma_cookie_t	cookie;
 	unsigned char *hdr = (unsigned char*)skb->data;
+	unsigned long iflags;
 
 	dev_dbg(&node->rdev->dev,"%s: Start (%d)\n",__FUNCTION__,node->rdev->destid);
 
+	spin_lock_irqsave(&node->dma_lock, iflags);
 	if ( (( node->posted_write +1 )%node->ringsize) == node->act_read ) {
+		spin_unlock_irqrestore(&node->dma_lock, iflags);
 		dev_dbg(&node->rdev->dev,"%s: Ring full for node %d\n",__FUNCTION__,node->rdev->destid);
 		return NETDEV_TX_BUSY;
 	}
+	spin_unlock_irqrestore(&node->dma_lock, iflags);
 
 	param = kmem_cache_alloc(riosocket_cache,GFP_ATOMIC);
 
@@ -310,6 +314,23 @@ int riosocket_send_packet( unsigned int netid, unsigned int destid, struct sk_bu
 	return ret;
 }
 
+static int rsock_dma_check_avail(struct riosocket_node *node)
+{
+	unsigned long flags;
+	int pkt_rx = 0;
+
+	spin_lock_irqsave(&node->dma_lock, flags);
+	if(node->mem_read == node->mem_write)
+		pkt_rx = 0;
+	else if (node->mem_write > node->mem_read)
+		pkt_rx = node->mem_write - node->mem_read;
+	else
+		pkt_rx = node->ringsize - (node->mem_read - node->mem_write);
+	spin_unlock_irqrestore(&node->dma_lock, flags);
+
+	return pkt_rx;
+}
+
 int riosocket_packet_drain( struct riosocket_node *node, int budget )
 {
 	int packetrxed=0,i=0,length;
@@ -320,12 +341,9 @@ int riosocket_packet_drain( struct riosocket_node *node, int budget )
 
 	dev_dbg(&node->rdev->dev,"%s: Start (%d)\n",__FUNCTION__,node->rdev->destid);
 
-	if( node->mem_read == node->mem_write )
+	packetrxed = rsock_dma_check_avail(node);
+	if (!packetrxed)
 		return 0;
-	else if( node->mem_write > node->mem_read )
-		packetrxed = node->mem_write - node->mem_read;
-	else
-		packetrxed = node->ringsize - node->mem_read;
 
 	dev_dbg(&node->rdev->dev,"%s: Number of packets to be processed=%d\n",
 			__FUNCTION__,packetrxed);
@@ -461,6 +479,7 @@ static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, u
 	struct riosocket_node *node;
 	unsigned char cmd=(info&DB_CMD_MASK);
 	unsigned long long linfo=info;
+	unsigned long flags;
 
         node = riosocket_get_node_id(&net->actnodelist,sid);
 
@@ -515,7 +534,9 @@ static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, u
 		dev_dbg(&mport->dev,"%s:Received n/w packet command from node %d with write index %d\n",
 							__FUNCTION__,sid,(info>>CMD_SHIFT));
 
-		node->mem_write = info>>CMD_SHIFT;
+		spin_lock_irqsave(&node->dma_lock, flags);
+		node->mem_write = info >> CMD_SHIFT;
+		spin_unlock_irqrestore(&node->dma_lock, flags);
 
 		napi_schedule(&node->napi);
 
@@ -523,7 +544,9 @@ static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, u
 
 		dev_dbg(&mport->dev,"%s:Received read count update packet command from node %d with read index %d\n",
 					__FUNCTION__,sid,(info>>CMD_SHIFT));
+		spin_lock_irqsave(&node->dma_lock, flags);
 		node->act_read =  info>>CMD_SHIFT;
+		spin_unlock_irqrestore(&node->dma_lock, flags);
 		netif_wake_queue(node->ndev);
 
 	} else {
@@ -714,6 +737,7 @@ static int rsock_add_dev(struct device *dev, struct subsys_interface *sif)
 	node->rdev = rdev;
 	node->devid = rdev->destid;
 	node->ringsize = NODE_MEMLEN/NODE_SECTOR_SIZE;
+	spin_lock_init(&node->dma_lock);
 
 	if (rio_phys_mem && rio_phys_size) {
 		node->buffer_address = net_phys_mem +
