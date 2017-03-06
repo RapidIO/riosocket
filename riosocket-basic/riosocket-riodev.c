@@ -113,10 +113,8 @@ static void riosocket_tx_cb( void *p )
 
 	stats.transitpktcount=0;
 
-	if( (param->node->act_write +1) == param->node->ringsize)
-		param->node->act_write = 0;
-	else
-		param->node->act_write += 1;
+	++param->node->act_write;
+	param->node->act_write %= param->node->ringsize;
 
 	if ( netif_queue_stopped(param->node->ndev ) )
 		netif_wake_queue(param->node->ndev);
@@ -237,10 +235,8 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 
 	dma_async_issue_pending(nets[node->netid].dmachan);
 
-	if( (node->posted_write +1) == node->ringsize)
-		node->posted_write = 0;
-	else
-		node->posted_write += 1;
+	++node->posted_write;
+	node->posted_write %= node->ringsize;
 
 
 	dev_dbg(&node->rdev->dev,"%s: Sent packet to %llx of size %d on node %d\n",
@@ -389,10 +385,8 @@ int riosocket_packet_drain( struct riosocket_node *node, int budget )
 			netif_receive_skb(skb);
 		}
 
-		if( (node->mem_read + 1) == node->ringsize )
-			node->mem_read = 0;
-		else
-			node->mem_read++;
+		++node->mem_read;
+		node->mem_read %= node->ringsize;
 	}
 
 	rio_send_doorbell(node->rdev, rio_db|DB_UPD_RD_CNT|(node->mem_read<<CMD_SHIFT));
