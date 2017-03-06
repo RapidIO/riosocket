@@ -56,7 +56,7 @@ EXPORT_SYMBOL(rio_phys_size);
 
 unsigned long rio_base_addr = DEFAULT_RIO_BASE;
 module_param(rio_base_addr, ulong , S_IRUGO);
-MODULE_PARM_DESC(rio_base_addr, "Inbound RaridIO window base address");
+MODULE_PARM_DESC(rio_base_addr, "Inbound RapidIO window base address");
 
 unsigned long rio_ibw_size = DEFAULT_IBW_SIZE;
 module_param(rio_ibw_size, ulong , S_IRUGO);
