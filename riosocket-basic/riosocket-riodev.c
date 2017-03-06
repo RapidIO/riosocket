@@ -316,8 +316,7 @@ int riosocket_packet_drain( struct riosocket_node *node, int budget )
 	struct sk_buff *skb;
 	void __iomem *srcaddr;
 	void *dstaddr;
-	unsigned char __iomem *hdr;
-
+	struct ethhdr *eth;
 
 	dev_dbg(&node->rdev->dev,"%s: Start (%d)\n",__FUNCTION__,node->rdev->destid);
 
@@ -338,24 +337,29 @@ int riosocket_packet_drain( struct riosocket_node *node, int budget )
 
 	for(i=0; i < packetrxed; i++ ) {
 
-		hdr=(unsigned char*)(node->local_ptr + (node->mem_read*NODE_SECTOR_SIZE));
+		eth = (struct ethhdr *)(node->local_ptr + (node->mem_read * NODE_SECTOR_SIZE));
 
-		length=(hdr[2]<<8) | hdr[1];
+		length = (eth->h_dest[2] << 8) | eth->h_dest[1];
 
-		if ( length == 0 ) {
-				dev_err(&node->rdev->dev,"%s: Packet with len 0 received!!!!!\n",__FUNCTION__);
+		if (length == 0) {
+				dev_err(&node->rdev->dev,
+					"%s: Packet with len=0 received!\n",
+					__FUNCTION__);
+				dev_err(&node->rdev->dev,
+					"%s: dst=%pM src=%pM\n", __FUNCTION__,
+					eth->h_dest, eth->h_source);
 		} else {
 #ifdef DEBUG
 			dma_addr_t paddr = node->buffer_address + (node->mem_read * NODE_SECTOR_SIZE);
 			dev_dbg(&node->rdev->dev,"%s: Packet with len %d received at %pa\n",
 					__FUNCTION__,length, &paddr);
 #endif
-			if( hdr[0] == 0xFF ) {
-					hdr[1] = 0xFF;
-					hdr[2] = 0xFF;
+			if(eth->h_dest[0] == 0xFF) {
+				eth->h_dest[1] = 0xFF;
+				eth->h_dest[2] = 0xFF;
 			} else {
-					hdr[1] = 0x00;
-					hdr[2] = 0x00;
+				eth->h_dest[1] = 0x00;
+				eth->h_dest[2] = 0x00;
 			}
 
 			srcaddr = node->local_ptr + (node->mem_read*NODE_SECTOR_SIZE);

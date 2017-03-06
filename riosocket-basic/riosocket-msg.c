@@ -51,7 +51,7 @@ static int riosocket_rx_clean(struct net_device *ndev)
 	struct riosocket_msg_private *rnet = &priv->rnetpriv;
 	void *data;
 	int msg_size;
-	unsigned char *hdr;
+	struct ethhdr *eth;
 
 	dev_dbg(&ndev->dev,"%s: Start\n",__FUNCTION__);
 
@@ -65,16 +65,16 @@ static int riosocket_rx_clean(struct net_device *ndev)
 						 &msg_size)))
 			break;
 
-		hdr = data;
+		eth = (struct ethhdr *)data;
 
-		msg_size = (hdr[2] << 8) | hdr[1];
+		msg_size = (eth->h_dest[2] << 8) | eth->h_dest[1];
 
-		if( hdr[0] == 0xFF ) {
-			hdr[1] = 0xFF;
-			hdr[2] = 0xFF;
+		if(eth->h_dest[0] == 0xFF ) {
+			eth->h_dest[1] = 0xFF;
+			eth->h_dest[2] = 0xFF;
 		} else {
-			hdr[1] = 0x00;
-			hdr[2] = 0x00;
+			eth->h_dest[1] = 0x00;
+			eth->h_dest[2] = 0x00;
 		}
 
 		rnet->rx_skb[i]->data = data;
