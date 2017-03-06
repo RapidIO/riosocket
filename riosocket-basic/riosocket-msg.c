@@ -288,14 +288,13 @@ int riosocket_start_xmit_msg(struct sk_buff *skb, struct net_device *ndev)
 
 		node = riosocket_get_node_id(&nets[priv->netid].actnodelist,destid);
 
-		if (node->ready) {
+		if (node && node->ready) {
 			dev_dbg(&ndev->dev,"%s: Sending message to node %d\n",__FUNCTION__,
 										node->devid);
 			riosocket_queue_tx_msg(skb, ndev,node->rdev,0);
 		} else {
 			dev_kfree_skb_irq(skb);
-			ndev->stats.tx_packets++;
-			ndev->stats.tx_bytes += skb->len;
+			ndev->stats.tx_dropped++;
 		}
 	}
 
