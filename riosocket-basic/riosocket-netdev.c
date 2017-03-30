@@ -1,5 +1,6 @@
 /*********************************************************************
  *  Copyright of Centaurus Computing - 2016
+ *  Copyright 2017, Integrated Device Technology, Inc.
  *   
  *  This file is part of riosocket-basic.
  *   

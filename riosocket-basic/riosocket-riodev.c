@@ -1,5 +1,6 @@
 /*********************************************************************
  *  Copyright of Centaurus Computing - 2016
+ *  Copyright 2017, Integrated Device Technology, Inc.
  * 
  *  This file is part of riosocket-basic.
  * 
@@ -36,8 +37,9 @@
 #include "riosocket.h"
 
 MODULE_AUTHOR("Centaurus Computing");
+MODULE_AUTHOR("Integrated Device Technology, Inc.");
 MODULE_DESCRIPTION("RIOSocket-basic Virtual Network Driver");
-MODULE_VERSION("1.01.01");
+MODULE_VERSION("1.03.00");
 MODULE_LICENSE("GPL");
 
 unsigned short rio_db=0;
