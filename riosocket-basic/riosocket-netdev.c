@@ -40,34 +40,29 @@ static void riosocket_net_set_multicast (struct net_device *netdev)
 	dev_dbg(&netdev->dev,"%s: End\n",__FUNCTION__);
 }
 
-static int riosocket_start_xmit_dma( struct sk_buff *skb, struct net_device *netdev )
+static int riosocket_start_xmit_dma(struct sk_buff *skb,
+				    struct net_device *netdev, u16 destid)
 {
 	struct riosocket_private *priv;
-	struct ethhdr *eth = (struct ethhdr *)skb->data;
-	unsigned int destid=riosocket_get_node_id_from_mac(eth->h_dest);
 	struct riosocket_msg_private *rnet;
 	int ret=0;
 
-	priv = (struct riosocket_private*)netdev_priv(netdev);
-	rnet = (struct riosocket_msg_private *)&priv->rnetpriv;
+	priv = netdev_priv(netdev);
+	rnet = &priv->rnetpriv;
 
-	dev_dbg(&netdev->dev,"%s: Sending packet to node %d\n",__FUNCTION__,
-													destid);
-	if( destid == BROADCAST || is_multicast_ether_addr(eth->h_dest))
+	dev_dbg(&netdev->dev, "%s: Sending packet to node %d\n",
+		__func__, destid);
+
+	if (destid == BROADCAST)
 		ret = riosocket_send_broadcast( priv->netid, skb );
 	else
 		ret = riosocket_send_packet( priv->netid,destid, skb );
 
-	/* Don't wait up for transmitted skbs to be freed. */
-	skb_orphan(skb);
-	nf_reset(skb);
-
-	if( ret == NETDEV_TX_BUSY ) {
-		dev_dbg(&netdev->dev,"%s: Ring full. Stopping network queue\n",__FUNCTION__);
+	if (ret == NETDEV_TX_BUSY) {
+		dev_dbg(&netdev->dev, "%s: DMA ring is full.\n", __func__);
 		stats.txringfull++;
-		netif_stop_queue(netdev);
-	} else if ( ret != 0 ) {
-		dev_dbg(&netdev->dev,"%s: Something went wrong during transmission\n",__FUNCTION__);
+	} else if (ret) {
+		dev_dbg(&netdev->dev, "%s: DMA TX err=%d\n", __func__, ret);
 		netdev->stats.tx_dropped++;
 		dev_kfree_skb_any(skb);
 	} else {
@@ -80,28 +75,35 @@ static int riosocket_start_xmit_dma( struct sk_buff *skb, struct net_device *net
 
 static int riosocket_net_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
-	int ret=0;
+	struct riosocket_private *priv;
+	struct ethhdr *eth;
 
 	dev_dbg(&netdev->dev,"%s: Start\n",__FUNCTION__);
 
-	if( skb->len > NODE_SECTOR_SIZE ) {
-		dev_dbg(&netdev->dev,"%s: skb size greater than mtu!\n",__FUNCTION__);
+	if (!skb)
+		return -EIO;
+
+	if (skb->len > NODE_SECTOR_SIZE) {
+		dev_info(&netdev->dev,
+			"%s: skb size greater than max sector size!\n",
+			__func__);
+		dev_kfree_skb_any(skb);
+		netdev->stats.tx_dropped++;
 		return -EINVAL;
 	}
 
-	if( skb == NULL ) {
-		return -EINVAL;
-	}
+	eth = (struct ethhdr *)skb->data;
+	priv = netdev_priv(netdev);
 
-	if( skb->len > msgwatermark )
-		ret=riosocket_start_xmit_dma(skb,netdev);
-	else
-		ret=riosocket_start_xmit_msg(skb,netdev);
+	if (skb_queue_len(&priv->tx_queue) > RSOCK_TX_QUEUE_OFF)
+		netif_stop_queue(netdev);
 
-	dev_dbg(&netdev->dev,"%s: End\n",__FUNCTION__);
+	eth->h_source[1] = (unsigned char)(skb->len & 0xFF);
+	eth->h_source[2] = (unsigned char)((skb->len >> 8) & 0xFF);
 
-	return ret;
-
+	skb_queue_tail(&priv->tx_queue, skb);
+	tasklet_schedule(&priv->tx_tasklet);
+	return NETDEV_TX_OK;
 }
 
 static int riosocket_net_open(struct net_device *netdev)
@@ -114,13 +116,10 @@ static int riosocket_net_open(struct net_device *netdev)
 	priv = (struct riosocket_private*)netdev_priv(netdev);
 
 	if (!(ret=riosocket_open(netdev))) {
-
 		netif_carrier_on(netdev);
 		netif_start_queue(netdev);
-
-		riosocket_send_hello_msg(priv->netid);
-
 		priv->link=1;
+		riosocket_send_hello_msg(priv->netid);
 	} else {
 		dev_err(&netdev->dev,"Error init msg engine\n");
 	}
@@ -151,21 +150,114 @@ static int riosocket_net_close(struct net_device *netdev)
 	return 0;
 }
 
-static int riosocket_poll( struct napi_struct *napi, int budget )
+static int rsock_check_rx_queue(struct riosocket_node *node,
+				 int budget, int *rxd)
+{
+	struct sk_buff *skb;
+	int i;
+
+	for (i = 0; i < budget; i++) {
+		skb = skb_dequeue(&node->rx_queue);
+		if (!skb)
+			break;
+
+		skb->dev = node->ndev;
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+		skb->protocol = eth_type_trans(skb, node->ndev);
+		skb_shinfo(skb)->nr_frags = 0;
+
+		++node->ndev->stats.rx_packets;
+		node->ndev->stats.rx_bytes += skb->len;
+
+		netif_receive_skb(skb);
+	}
+
+	if (rxd)
+		*rxd = i;
+
+	return (i) ? 0 : -ENOMSG;
+}
+
+static int riosocket_rx_poll(struct napi_struct *napi, int budget)
 {
 	struct riosocket_node *node = container_of(napi,struct riosocket_node,napi);
 	int ret;
+	int rx_total = 0, rxd;
 
 	dev_dbg(&node->rdev->dev,"%s: Start (%d)\n",__FUNCTION__,node->rdev->destid);
 
-	ret = riosocket_packet_drain( node , budget );
+poll_repeat:
+	ret = rsock_check_rx_queue(node, budget - rx_total, &rxd);
+	if (!ret)
+		rx_total += rxd;
 
-	if( ret < budget )
+	if (rx_total < budget) {
 		napi_complete(napi);
+
+		if (!skb_queue_empty(&node->rx_queue) && napi_reschedule(napi))
+			goto poll_repeat;
+	}
 
 	dev_dbg(&node->rdev->dev,"%s: End (%d)\n",__FUNCTION__,node->rdev->destid);
 
-	return ret;
+	return rx_total;
+}
+
+static void rsock_tx_tasklet(unsigned long data)
+{
+	struct riosocket_private *priv;
+	struct sk_buff *skb;
+	struct ethhdr *eth;
+	struct net_device *netdev;
+	u16 destid;
+	int i, ret;
+
+	priv = (struct riosocket_private *)data;
+	netdev = nets[priv->netid].ndev;
+
+	for (i = 0; i < RSOCK_TX_BUDGET; i++) {
+		skb = skb_dequeue(&priv->tx_queue);
+		if (!skb)
+			break;
+
+		eth = (struct ethhdr *)skb->data;
+
+		if (is_multicast_ether_addr(eth->h_dest))
+			destid = BROADCAST;
+		else
+			destid = riosocket_get_destid_from_mac(eth->h_dest);
+
+		if (skb->len > msgwatermark &&
+					atomic_read(&priv->msg_pending) == 0) {
+			ret = riosocket_start_xmit_dma(skb, netdev, destid);
+			if (ret && ret != NETDEV_TX_BUSY)
+				dev_info(&netdev->dev,
+					"%s: start_xmit_dma failed (err=%d)\n",
+					__func__, ret);
+		} else if (skb->len <= msgwatermark &&
+					atomic_read(&priv->dma_pending) == 0) {
+			ret = riosocket_start_xmit_msg(skb, netdev, destid);
+			if (ret && ret != NETDEV_TX_BUSY)
+				dev_info(&netdev->dev,
+					"%s: start_xmit_msg failed (err=%d)\n",
+					__func__, ret);
+		} else
+			ret = NETDEV_TX_BUSY;
+
+		if (ret == NETDEV_TX_BUSY) {
+			/* MSG TX channel is busy.
+			 * Return skb into the queue and reschedule the tasklet
+			 */
+			skb_queue_head(&priv->tx_queue, skb);
+			break;
+		}
+	}
+
+	if (skb_queue_len(&priv->tx_queue) < RSOCK_TX_QUEUE_ON)
+		netif_wake_queue(netdev);
+
+	if (!skb_queue_empty(&priv->tx_queue))
+		tasklet_schedule(&priv->tx_tasklet);
 }
 
 void riosocket_eth_setup(struct net_device *ndev)
@@ -226,6 +318,10 @@ int riosocket_netinit( struct riosocket_network *net )
 	priv->rnetpriv.mport = net->mport;
 	spin_lock_init(&priv->rnetpriv.lock);
 	spin_lock_init(&priv->rnetpriv.tx_lock);
+	skb_queue_head_init(&priv->tx_queue);
+	atomic_set(&priv->dma_pending, 0);
+	atomic_set(&priv->msg_pending, 0);
+	tasklet_init(&priv->tx_tasklet, rsock_tx_tasklet, (unsigned long)priv);
 
 	net->ndev->dev_addr[0] = 0xC2;
 	net->ndev->dev_addr[1] = 0x00;
@@ -245,8 +341,13 @@ int riosocket_netinit( struct riosocket_network *net )
 
 int riosocket_netdeinit( struct riosocket_network *net )
 {
+	struct riosocket_private *priv;
+
 	dev_dbg(&net->ndev->dev,"%s: Start\n",__FUNCTION__);
 
+	priv = (struct riosocket_private *)netdev_priv(net->ndev);
+
+	tasklet_kill(&priv->tx_tasklet);
 	unregister_netdev(net->ndev);
 	free_netdev(net->ndev);
 	net->ndev = NULL;
@@ -258,7 +359,7 @@ int riosocket_netdeinit( struct riosocket_network *net )
 
 int riosocket_node_napi_init( struct riosocket_node *node )
 {
-	netif_napi_add( node->ndev, &node->napi,riosocket_poll, NAPI_WEIGHT );
+	netif_napi_add(node->ndev, &node->napi, riosocket_rx_poll, NAPI_WEIGHT);
 	napi_enable(&node->napi);
 
 	return 0;

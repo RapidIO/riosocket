@@ -19,17 +19,20 @@
  *
  * ********************************************************************/
 
-#define RIOSOCKET_VERSION		"1.01.01"
+#define RIOSOCKET_VERSION		"1.3.0"
 #define TSI721_VENDOR_ID                0x0038
 #define TSI721_DEVICE_ID                0x80AB
 
 #define MAX_NETS			8
 #define DEFAULT_DOORBELL_BASE		0xe000
-#define NAPI_WEIGHT			8
+#define NAPI_WEIGHT			16
+#define RSOCK_TX_BUDGET			8
 #define RIOSOCKET_HEADER		8
 #define DEFAULT_MSG_WATERMARK		256
 #define RIONET_MAILBOX			0
-
+#define RSOCK_TX_QUEUE_LEN		256
+#define RSOCK_TX_QUEUE_OFF		(RSOCK_TX_QUEUE_LEN - RSOCK_TX_QUEUE_LEN/8)
+#define RSOCK_TX_QUEUE_ON		(RSOCK_TX_QUEUE_LEN - RSOCK_TX_QUEUE_LEN/4)
 #define RIONET_TX_RING_SIZE		512
 #define RIONET_RX_RING_SIZE		512
 
@@ -52,7 +55,7 @@
 #define DEFAULT_IBW_SIZE		0x8000000 /* 128MB IBW = 64 nodes */
 #define DEFAULT_RIO_BASE		0 /* must be within first 16GB of addr space */
 
-#define BROADCAST			0xFFFFFFFF
+#define BROADCAST			0xFFFF
 
 #define GET_DESTID(x)			((*((u8 *)x + 4) << 8) | *((u8 *)x + 5))
 
@@ -83,6 +86,10 @@ struct riosocket_private {
         struct riosocket_msg_private rnetpriv;
         unsigned char netid;
         unsigned char link;
+	struct sk_buff_head tx_queue;
+	atomic_t dma_pending;
+	atomic_t msg_pending;
+	struct tasklet_struct	tx_tasklet;
 };
 
 struct riosocket_node {
@@ -104,12 +111,14 @@ struct riosocket_node {
     	unsigned char mem_write;
     	unsigned char mem_read;
     	unsigned char ringsize;
+	struct sk_buff_head rx_queue;
 	spinlock_t dma_lock;
 };
 
 struct riosocket_network {
         struct net_device   *ndev;
         struct list_head actnodelist;
+	unsigned int nact;
         spinlock_t lock;
         struct rio_mport *mport;
         struct dma_chan *dmachan;
@@ -136,7 +145,7 @@ static inline struct riosocket_node* riosocket_get_node(
 }
 
 static inline struct riosocket_node* riosocket_get_node_id(
-				struct list_head *nlist, unsigned int id)
+				struct list_head *nlist, u16 id)
 {
 	struct riosocket_node *node;
 	list_for_each_entry(node, nlist, nodelist)
@@ -145,16 +154,12 @@ static inline struct riosocket_node* riosocket_get_node_id(
 	return NULL;
 }
 
-inline static unsigned int riosocket_get_node_id_from_mac(char *macAddr)
+static inline u16 riosocket_get_destid_from_mac(u8 *mac_addr)
 {
-	unsigned char arr[] = { 0xC2,00,00,00 };
-
-	if( !memcmp( macAddr , arr , (ETH_ALEN-2)) )
-    	{
-    		return GET_DESTID(macAddr);
-    	}
-
-    	return BROADCAST;
+	if (mac_addr[0] == 0xC2)
+		return GET_DESTID(mac_addr);
+	else
+		return BROADCAST;
 }
 
 inline static void riosocket_pkt_dump( char *data, int len )
@@ -167,17 +172,19 @@ inline static void riosocket_pkt_dump( char *data, int len )
 	}
 }
 
+extern struct riosocket_network nets[MAX_NETS];
 extern struct riosocket_driver_params stats;
+
 int riosocket_netinit( struct riosocket_network *net );
 int riosocket_netdeinit( struct riosocket_network *net );
 int riosocket_node_napi_init( struct riosocket_node *peer );
 int riosocket_node_napi_deinit( struct riosocket_node *node );
 void riosocket_send_hello_msg( unsigned char netid );
 void riosocket_send_bye_msg( unsigned char netid );
-int riosocket_send_packet( unsigned int netid, unsigned int destid, struct sk_buff *skb );
+int riosocket_send_packet(unsigned int netid, u16 destid, struct sk_buff *skb);
 int riosocket_send_broadcast( unsigned int netid, struct sk_buff *skb );
-int riosocket_packet_drain( struct riosocket_node *node, int budget );
-int riosocket_start_xmit_msg(struct sk_buff *skb, struct net_device *ndev);
+int riosocket_start_xmit_msg(struct sk_buff *skb,
+			     struct net_device *ndev, u16 destid);
 int riosocket_open(struct net_device *ndev);
 int riosocket_close(struct net_device *ndev);
 void riosocket_inb_msg_event(struct rio_mport *mport, void *dev_id, int mbox, int slot);

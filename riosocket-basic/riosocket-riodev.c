@@ -118,23 +118,14 @@ static void riosocket_tx_cb( void *p )
 	++param->node->act_write;
 	param->node->act_write %= param->node->ringsize;
 
-	if ( netif_queue_stopped(param->node->ndev ) )
-		netif_wake_queue(param->node->ndev);
-
 	dma_unmap_sg(nets[param->node->netid].dmachan->device->dev,
 						&param->sgl , 1 ,DMA_TO_DEVICE);
 
-
-	if( !param->skb->xmit_more ||
-		((( param->node->act_write +1 )%param->node->ringsize) ==
-					param->node->act_read)) {
-		dev_dbg(&param->node->rdev->dev,"%s: Sending DB to node %d\n",__FUNCTION__,
-											param->node->rdev->destid);
-		rio_send_doorbell(param->node->rdev,(rio_db|DB_PKT_RXED|(param->node->act_write<<CMD_SHIFT)));
-	} else {
-		stats.numxmitmore++;
-	}
-
+	dev_dbg(&param->node->rdev->dev, "%s: Sending DB to node %s\n",
+		__func__, rio_name(param->node->rdev));
+	rio_send_doorbell(param->node->rdev,
+			  (rio_db | DB_PKT_RXED |
+			   (param->node->act_write << CMD_SHIFT)));
 	param->node->ndev->stats.tx_packets++;
 	param->node->ndev->stats.tx_bytes += param->skb->len;
 
@@ -157,7 +148,7 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 	struct dma_async_tx_descriptor *tx = NULL;
 	enum dma_ctrl_flags	flags;
 	dma_cookie_t	cookie;
-	unsigned char *hdr = (unsigned char*)skb->data;
+	struct riosocket_private *priv;
 	unsigned long iflags;
 
 	dev_dbg(&node->rdev->dev,"%s: Start (%d)\n",__FUNCTION__,node->rdev->destid);
@@ -173,18 +164,19 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 	param = kmem_cache_alloc(riosocket_cache,GFP_ATOMIC);
 
 	if (param==NULL) {
-		dev_dbg(&node->rdev->dev,"%s: Error allocating callback param struct\n",
-										__FUNCTION__);
+		dev_err(&node->rdev->dev,
+			"%s: Error allocating callback param struct\n",
+			__func__);
 		return -ENOMEM;
 	}
-
-	hdr[1] = (unsigned char)(skb->len & 0xFF);
-	hdr[2] = (unsigned char)((skb->len >> 8) & 0xFF);
 
 	param->node = node;
 	param->skb = skb;
 
 	rioaddr = node->rioaddress + ( node->posted_write * NODE_SECTOR_SIZE);
+
+	if (rioaddr >= node->rioaddress + NODE_MEMLEN)
+		dev_err(&node->rdev->dev, "ERR: invalid rioaddr=0x%llx\n", rioaddr);
 
 	sg_set_buf(&param->sgl,(const void*)skb->data, skb->len);
 
@@ -218,7 +210,7 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 		dma_unmap_sg( nets[node->netid].dmachan->device->dev, &param->sgl, 1,
 							DMA_MEM_TO_DEV );
 		kmem_cache_free(riosocket_cache,param);
-		
+
 		if( PTR_ERR(tx) == -EBUSY ) {
 			return NETDEV_TX_BUSY;
 		} else {
@@ -231,11 +223,15 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 	tx->callback = riosocket_tx_cb;
 	tx->callback_param = param;
 
+	priv = netdev_priv(node->ndev);
+	atomic_inc(&priv->dma_pending);
+
 	cookie = dmaengine_submit(tx);
 
 	if (dma_submit_error(cookie)) {
 			kmem_cache_free(riosocket_cache,param);
 			dev_err(&node->rdev->dev,"Error in submitting dma packet\n");
+			atomic_dec(&priv->dma_pending);
 			return -EIO;
 	}
 
@@ -243,7 +239,6 @@ static int riosocket_dma_packet( struct riosocket_node *node, struct sk_buff *sk
 
 	++node->posted_write;
 	node->posted_write %= node->ringsize;
-
 
 	dev_dbg(&node->rdev->dev,"%s: Sent packet to %llx of size %d on node %d\n",
 			__FUNCTION__,rioaddr,skb->len,node->devid);
@@ -286,32 +281,23 @@ int riosocket_send_broadcast( unsigned int netid, struct sk_buff *skb )
 	return ret;
 }
 
-int riosocket_send_packet( unsigned int netid, unsigned int destid, struct sk_buff *skb )
+int riosocket_send_packet(unsigned int netid, u16 destid, struct sk_buff *skb)
 {
 	struct riosocket_node *node;
 	int ret;
 	unsigned long flags=0;
 
-	spin_lock_irqsave(&nets[netid].lock,flags);
-        node = riosocket_get_node_id(&nets[netid].actnodelist,destid);
-        spin_unlock_irqrestore(&nets[netid].lock,flags);
+	spin_lock_irqsave(&nets[netid].lock, flags);
+	node = riosocket_get_node_id(&nets[netid].actnodelist, destid);
+	spin_unlock_irqrestore(&nets[netid].lock, flags);
 
-	if( node == NULL )
+	if (!node || !node->ready)
 		return -ENODEV;
 
-	dev_dbg(&node->rdev->dev,"%s: Start (%d)\n",__FUNCTION__,node->rdev->destid);
+	dev_dbg(&node->rdev->dev, "%s: Sending packet to node %d\n",
+		__func__, destid);
 
-	if( !node->ready ) {
-		dev_dbg(&node->rdev->dev,"%s: Node %d not ready yet\n",
-												__FUNCTION__,node->devid);
-		return -1;
-	}
-
-	dev_dbg(&node->rdev->dev,"%s: Sending packet to node %d\n",__FUNCTION__,destid);
-
-	ret = riosocket_dma_packet( node , skb );
-
-	dev_dbg(&node->rdev->dev,"%s: End (%d)\n",__FUNCTION__,node->rdev->destid);
+	ret = riosocket_dma_packet(node, skb);
 
 	return ret;
 }
@@ -350,37 +336,28 @@ int riosocket_packet_drain( struct riosocket_node *node, int budget )
 	dev_dbg(&node->rdev->dev,"%s: Number of packets to be processed=%d\n",
 			__FUNCTION__,packetrxed);
 
-	if( packetrxed > budget  ) {
-		packetrxed = min( budget, NAPI_WEIGHT );
-		stats.napisaturate++;
-	}
-
 	for(i=0; i < packetrxed; i++ ) {
 
 		eth = (struct ethhdr *)(node->local_ptr + (node->mem_read * NODE_SECTOR_SIZE));
 
-		length = (eth->h_dest[2] << 8) | eth->h_dest[1];
+		length = (eth->h_source[2] << 8) | eth->h_source[1];
 
 		if (length == 0) {
-				dev_err(&node->rdev->dev,
-					"%s: Packet with len=0 received!\n",
-					__FUNCTION__);
-				dev_err(&node->rdev->dev,
-					"%s: dst=%pM src=%pM\n", __FUNCTION__,
-					eth->h_dest, eth->h_source);
+			dev_err(&node->rdev->dev,
+				"%s: Packet %d/%d with len=0 received!\n",
+				__func__, i, packetrxed);
+			dev_err(&node->rdev->dev, "%s: dst=%pM src=%pM\n",
+				__func__, eth->h_dest, eth->h_source);
+			dev_err(&node->rdev->dev, "%s: mw_ptr=%d mr_ptr=%d\n",
+				__func__, node->mem_write, node->mem_read);
 		} else {
 #ifdef DEBUG
 			dma_addr_t paddr = node->buffer_address + (node->mem_read * NODE_SECTOR_SIZE);
 			dev_dbg(&node->rdev->dev,"%s: Packet with len %d received at %pa\n",
 					__FUNCTION__,length, &paddr);
 #endif
-			if(eth->h_dest[0] == 0xFF) {
-				eth->h_dest[1] = 0xFF;
-				eth->h_dest[2] = 0xFF;
-			} else {
-				eth->h_dest[1] = 0x00;
-				eth->h_dest[2] = 0x00;
-			}
+			eth->h_source[1] = 0x00;
+			eth->h_source[2] = 0x00;
 
 			srcaddr = node->local_ptr + (node->mem_read*NODE_SECTOR_SIZE);
 
@@ -397,16 +374,7 @@ int riosocket_packet_drain( struct riosocket_node *node, int budget )
 						__FUNCTION__,srcaddr,dstaddr,length);
 
 			memcpy(dstaddr,srcaddr,length);
-
-			skb->dev = node->ndev;
-			skb->protocol = eth_type_trans(skb, node->ndev);
-			skb->ip_summed = CHECKSUM_UNNECESSARY;
-			skb_shinfo(skb)->nr_frags = 0;
-
-			node->ndev->stats.rx_packets++;
-			node->ndev->stats.rx_bytes += skb->len;
-
-			netif_receive_skb(skb);
+			skb_queue_tail(&node->rx_queue, skb);
 		}
 
 		++node->mem_read;
@@ -414,7 +382,6 @@ int riosocket_packet_drain( struct riosocket_node *node, int budget )
 	}
 
 	rio_send_doorbell(node->rdev, rio_db|DB_UPD_RD_CNT|(node->mem_read<<CMD_SHIFT));
-
 	dev_dbg(&node->rdev->dev,"%s: End (%d)\n",__FUNCTION__,node->rdev->destid);
 
 	return packetrxed;
@@ -424,10 +391,13 @@ void riosocket_send_hello_ack_msg( struct rio_dev *rdev )
 {
 	unsigned short msg=0;
 	struct riosocket_node *node;
+	unsigned long flags;
 
 	dev_dbg(&rdev->dev,"%s: Start (%d)\n",__FUNCTION__,rdev->destid);
 
+	spin_lock_irqsave(&nets[rdev->net->id].lock, flags);
 	node=riosocket_get_node(&nets[rdev->net->id].actnodelist,rdev);
+	spin_unlock_irqrestore(&nets[rdev->net->id].lock, flags);
 
 	msg = DB_HELLO_ACK_1;
 	msg |= (u16)((((node->buffer_address - rio_phys_mem) + rio_base_addr) >> 12) << CMD_SHIFT);
@@ -474,8 +444,8 @@ void riosocket_send_bye_msg(unsigned char netid)
 	spin_unlock_irqrestore(&nets[netid].lock, flags);
 }
 
-static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, unsigned short sid,
-		unsigned short tid, unsigned short info )
+static void riosocket_inb_dbell_event(struct rio_mport *mport, void *network,
+				      u16 sid, u16 tid, unsigned short info)
 {
 	struct riosocket_network *net = (struct riosocket_network*)network;
 	struct riosocket_node *node;
@@ -483,9 +453,17 @@ static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, u
 	unsigned long long linfo=info;
 	unsigned long flags;
 
+	spin_lock_irqsave(&net->lock, flags);
         node = riosocket_get_node_id(&net->actnodelist,sid);
+	spin_unlock_irqrestore(&net->lock, flags);
+
+	if (!node)
+		return;
 
 	dev_dbg(&node->rdev->dev,"%s: Start (%d)\n",__FUNCTION__,node->rdev->destid);
+
+	if (!((struct riosocket_private *)netdev_priv(node->ndev))->link)
+		return;
 
 	if (cmd == DB_HELLO) {
 
@@ -518,6 +496,7 @@ static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, u
 					__FUNCTION__,sid,info);
 		node->rioaddress|=((linfo >> CMD_SHIFT) << 24);
 		node->ready=1;
+		++net->nact;
 		dev_dbg(&mport->dev,"%s:Node %d remote address %llx\n",__FUNCTION__,
 									sid,node->rioaddress);
 	} else if (cmd == DB_BYE) {
@@ -530,9 +509,9 @@ static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, u
 		node->act_read=0;
 		node->act_write=0;
 		node->posted_write=0;
+		--net->nact;
 
 	} else if (cmd == DB_PKT_RXED) {
-
 		dev_dbg(&mport->dev,"%s:Received n/w packet command from node %d with write index %d\n",
 							__FUNCTION__,sid,(info>>CMD_SHIFT));
 
@@ -540,16 +519,41 @@ static void riosocket_inb_dbell_event( struct rio_mport *mport, void *network, u
 		node->mem_write = info >> CMD_SHIFT;
 		spin_unlock_irqrestore(&node->dma_lock, flags);
 
+		riosocket_packet_drain(node, NAPI_WEIGHT);
 		napi_schedule(&node->napi);
 
 	} else if (cmd == DB_UPD_RD_CNT) {
+		struct riosocket_private *priv;
+		unsigned char new_read;
+		int rd_diff = 0;
 
 		dev_dbg(&mport->dev,"%s:Received read count update packet command from node %d with read index %d\n",
 					__FUNCTION__,sid,(info>>CMD_SHIFT));
+
+		priv = netdev_priv(node->ndev);
+
 		spin_lock_irqsave(&node->dma_lock, flags);
-		node->act_read =  info>>CMD_SHIFT;
+		new_read = info >> CMD_SHIFT;
+		if (new_read == node->act_read)
+			goto no_update;
+		else if (new_read > node->act_read)
+			rd_diff = new_read - node->act_read;
+		else
+			rd_diff = node->ringsize - (node->act_read - new_read);
+
+		if (rd_diff > atomic_read(&priv->dma_pending)) {
+			dev_info(&mport->dev,
+				"ERR: UPD_RD_CNT from %d rd_diff %d > dma_pending\n",
+				 sid, rd_diff);
+			rd_diff = atomic_read(&priv->dma_pending);
+			WARN_ON(1);
+		}
+
+		node->act_read = new_read;
+		atomic_sub(rd_diff, &priv->dma_pending);
+no_update:
 		spin_unlock_irqrestore(&node->dma_lock, flags);
-		netif_wake_queue(node->ndev);
+		tasklet_schedule(&priv->tx_tasklet);
 
 	} else {
 
@@ -603,6 +607,7 @@ static int rsock_prep_mport(struct rio_mport *mport,
 	net->mport = mport;
 	spin_lock_init(&net->lock);
 	INIT_LIST_HEAD(&net->actnodelist);
+	net->nact = 0;
 	net->dmachan = rio_request_mport_dma(mport);
 
 	if (!net->dmachan) {
@@ -648,7 +653,7 @@ static int rsock_prep_mport(struct rio_mport *mport,
 		goto err_netinit;
 	}
 
-	ret = rio_request_inb_mbox(mport, net->ndev,
+	ret = rio_request_inb_mbox(mport, net,
 				RIONET_MAILBOX, RIONET_RX_RING_SIZE,
 				riosocket_inb_msg_event);
 	if (ret) {
@@ -739,6 +744,7 @@ static int rsock_add_dev(struct device *dev, struct subsys_interface *sif)
 	node->rdev = rdev;
 	node->devid = rdev->destid;
 	node->ringsize = NODE_MEMLEN/NODE_SECTOR_SIZE;
+	skb_queue_head_init(&node->rx_queue);
 	spin_lock_init(&node->dma_lock);
 
 	if (rio_phys_mem && rio_phys_size) {
