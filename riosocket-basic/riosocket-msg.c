@@ -147,7 +147,11 @@ static int riosocket_queue_tx_msg(struct sk_buff *skb, struct net_device *ndev,
 	rnet->tx_slot &= (RIONET_TX_RING_SIZE - 1);
 
 	if (count)
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,13,0))
 		atomic_inc(&skb->users);
+#else
+		refcount_inc(&skb->users);
+#endif
 
 	dev_dbg(&ndev->dev,"%s: End\n",__FUNCTION__);
 

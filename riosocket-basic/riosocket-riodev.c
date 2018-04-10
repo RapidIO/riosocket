@@ -268,7 +268,11 @@ int riosocket_send_broadcast( unsigned int netid, struct sk_buff *skb )
 		}
 
 		if (count)
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,13,0))
 			atomic_inc(&skb->users);
+#else
+			refcount_inc(&skb->users);
+#endif
 		count++;
 
 		ret = riosocket_dma_packet( node, skb );
