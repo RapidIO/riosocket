@@ -37,12 +37,12 @@
 
 unsigned long msgwatermark=DEFAULT_MSG_WATERMARK;
 
-static ssize_t riosocket_show_msgwatermark(struct device_driver *ddp, char *buf)
+static ssize_t msgwatermark_show(struct device_driver *ddp, char *buf)
 {
-         return snprintf(buf,PAGE_SIZE, "%ld\n", msgwatermark);
+	  return snprintf(buf,PAGE_SIZE, "%ld\n", msgwatermark);
 }
 
-static ssize_t riosocket_store_msgwatermark(struct device_driver *ddp,
+static ssize_t msgwatermark_store(struct device_driver *ddp,
                                       const char *buf, size_t count)
 {
 	if(!kstrtoul(buf, 10, &msgwatermark)) {
@@ -54,16 +54,19 @@ static ssize_t riosocket_store_msgwatermark(struct device_driver *ddp,
 	}
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0))
 static DRIVER_ATTR(msgwatermark, S_IRUSR | S_IWUSR,
-		riosocket_show_msgwatermark, riosocket_store_msgwatermark);
+		msgwatermark_show, msgwatermark_store);
+#else
+static DRIVER_ATTR_RW(msgwatermark);
+#endif
 
-
-static ssize_t riosocket_show_txringfull(struct device_driver *ddp, char *buf)
+static ssize_t txringfull_show(struct device_driver *ddp, char *buf)
 {
          return snprintf(buf,PAGE_SIZE, "%ld\n", stats.txringfull);
 }
 
-static ssize_t riosocket_store_txringfull(struct device_driver *ddp,
+static ssize_t txringfull_store(struct device_driver *ddp,
                                       const char *buf, size_t count)
 {
 	if(!kstrtoul(buf, 10, &stats.txringfull))
@@ -72,17 +75,21 @@ static ssize_t riosocket_store_txringfull(struct device_driver *ddp,
 		return 0;
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0))
 static DRIVER_ATTR(txringfull, S_IRUSR | S_IWUSR,
-		riosocket_show_txringfull, riosocket_store_txringfull);
+		txringfull_show, txringfull_store);
+#else
+static DRIVER_ATTR_RW(txringfull);
+#endif
 
 
-static ssize_t riosocket_show_maxintransitpkt(struct device_driver *ddp, char *buf)
+static ssize_t maxintransitpkt_show(struct device_driver *ddp, char *buf)
 {
          return snprintf(buf,PAGE_SIZE, "%ld\n", stats.maxintransitpkt);
 }
 
-static ssize_t riosocket_store_maxintransitpkt(struct device_driver *ddp,
-                                      const char *buf, size_t count)
+static ssize_t maxintransitpkt_store(struct device_driver *ddp,
+					const char *buf, size_t count)
 {
 	if(!kstrtoul(buf, 10, &stats.maxintransitpkt))
 		return count;
@@ -90,16 +97,20 @@ static ssize_t riosocket_store_maxintransitpkt(struct device_driver *ddp,
 		return 0;
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0))
 static DRIVER_ATTR(maxintransitpkt, S_IRUSR | S_IWUSR,
-		riosocket_show_maxintransitpkt, riosocket_store_maxintransitpkt);
+		maxintransitpkt_show, maxintransitpkt_store);
+#else
+static DRIVER_ATTR_RW(maxintransitpkt);
+#endif
 
 
-static ssize_t riosocket_show_numxmitmore(struct device_driver *ddp, char *buf)
+static ssize_t numxmitmore_show(struct device_driver *ddp, char *buf)
 {
          return snprintf(buf,PAGE_SIZE, "%ld\n", stats.numxmitmore);
 }
 
-static ssize_t riosocket_store_numxmitmore(struct device_driver *ddp,
+static ssize_t numxmitmore_store(struct device_driver *ddp,
                                       const char *buf, size_t count)
 {
 	if(!kstrtoul(buf, 10, &stats.numxmitmore))
@@ -108,15 +119,19 @@ static ssize_t riosocket_store_numxmitmore(struct device_driver *ddp,
 		return 0;
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0))
 static DRIVER_ATTR(numxmitmore, S_IRUSR | S_IWUSR,
-		riosocket_show_numxmitmore, riosocket_store_numxmitmore);
+		numxmitmore_show, numxmitmore_store);
+#else
+static DRIVER_ATTR_RW(numxmitmore);
+#endif
 
-static ssize_t riosocket_show_napisaturate(struct device_driver *ddp, char *buf)
+static ssize_t napisaturate_show(struct device_driver *ddp, char *buf)
 {
          return snprintf(buf,PAGE_SIZE, "%ld\n", stats.napisaturate);
 }
 
-static ssize_t riosocket_store_napisaturate(struct device_driver *ddp,
+static ssize_t napisaturate_store(struct device_driver *ddp,
                                       const char *buf, size_t count)
 {
 	if(!kstrtoul(buf, 10, &stats.napisaturate))
@@ -125,8 +140,12 @@ static ssize_t riosocket_store_napisaturate(struct device_driver *ddp,
 		return 0;
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0))
 static DRIVER_ATTR(napisaturate, S_IRUSR | S_IWUSR,
-		riosocket_show_napisaturate, riosocket_store_napisaturate);
+		napisaturate_show, napisaturate_store);
+#else
+static DRIVER_ATTR_RW(napisaturate);
+#endif
 
 static struct attribute *riosocket_drv_attrs[] = {
         &driver_attr_txringfull.attr,
